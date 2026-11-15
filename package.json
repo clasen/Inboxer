@@ -1,0 +1,69 @@
+{
+  "name": "inboxer",
+  "version": "0.1.0",
+  "description": "A self-hosted mail layer for agents: persists every inbound and outbound email, exposes an MCP server, and ships a minimal UI to review drafts.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "inboxer-login-link": "./dist/bin/login-link.js"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').cpSync('src/ui/static','dist/ui/static',{recursive:true})\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test 'test/**/*.test.ts'",
+    "test:bun": "bun test test",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "email",
+    "mailbox",
+    "inbox",
+    "mcp",
+    "agent",
+    "resend",
+    "drafts",
+    "support",
+    "htmx",
+    "hono",
+    "sqlite",
+    "clasen"
+  ],
+  "author": "Martin Clasen",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clasen/Inboxer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/clasen/Inboxer/issues"
+  },
+  "homepage": "https://github.com/clasen/Inboxer#readme",
+  "dependencies": {
+    "@hono/node-server": "^2.1.8",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "configre": "^2.1.9",
+    "deepbase": "^4.0.0",
+    "deepbase-sqlite": "^4.0.0",
+    "hono": "^4.13.18",
+    "svix": "^2.10.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2"
+  }
+}
