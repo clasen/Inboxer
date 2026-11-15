@@ -1,11 +1,15 @@
 :root {
     color-scheme: light dark;
-    --bg: light-dark(#fbfbfa, #0a0a0a);
+    --bg: light-dark(#fbfbfa, #0c0b0a);
     --fg: light-dark(#0a0a0a, #f2f2f0);
     --muted: light-dark(#8a8a86, #6e6e6a);
-    --line: light-dark(#e6e6e3, #1f1f1f);
+    --line: light-dark(#e6e6e3, #24201d);
     --soft: light-dark(#f1f1ef, #141414);
-    --accent: light-dark(#ff4d00, #ff6a2b);
+    --accent: light-dark(#ff4d00, #ff7a3d);
+    --focus: light-dark(#0a0a0a, #c2552a);
+    --primary-bg: light-dark(#0a0a0a, #2e1a10);
+    --primary-fg: light-dark(#fbfbfa, #ffd9c4);
+    --primary-border: light-dark(#0a0a0a, #5a2e17);
     --danger: light-dark(#d92d20, #ff6b5e);
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
     font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -83,9 +87,9 @@ button {
     border: 1px solid var(--line); background: transparent; color: var(--fg);
     cursor: pointer; transition: border-color .15s, opacity .15s;
 }
-button:hover { border-color: var(--fg); }
-button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-button.primary:hover { opacity: .85; }
+button:hover { border-color: var(--focus); }
+button.primary { background: var(--primary-bg); color: var(--primary-fg); border-color: var(--primary-border); }
+button.primary:hover { border-color: var(--focus); opacity: .9; }
 button.danger { color: var(--danger); border-color: transparent; }
 button.danger:hover { border-color: var(--danger); }
 button.link { height: auto; padding: 0; border: none; color: var(--muted); }
@@ -104,7 +108,7 @@ select {
     width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
     transform: translateY(-70%) rotate(45deg);
 }
-select:hover, select:focus { border-color: var(--fg); outline: none; }
+select:hover, select:focus { border-color: var(--focus); outline: none; }
 
 /* Editor */
 .field { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
@@ -113,7 +117,7 @@ select:hover, select:focus { border-color: var(--fg); outline: none; }
     font-family: var(--mono); font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
 }
 .field input { flex: 1; min-width: 0; border: none; background: none; padding: 12px 0; font: inherit; color: var(--fg); outline: none; }
-.field:focus-within { border-bottom-color: var(--fg); }
+.field:focus-within { border-bottom-color: var(--focus); }
 .field .link { font-family: var(--mono); font-size: .72rem; }
 textarea {
     display: block; width: 100%; min-height: 16rem; margin-top: 16px; padding: 0; resize: vertical;
@@ -125,7 +129,7 @@ textarea {
 .tabs { display: flex; gap: 16px; }
 .tabs a { color: var(--muted); font-weight: 500; padding: 4px 0; border-bottom: 1px solid transparent; }
 .tabs a:hover { color: var(--fg); }
-.tabs a[aria-current="page"] { color: var(--fg); border-bottom-color: var(--fg); }
+.tabs a[aria-current="page"] { color: var(--fg); border-bottom-color: var(--focus); }
 
 /* States */
 .centered { max-width: 360px; margin: 20vh auto 0; text-align: center; }
