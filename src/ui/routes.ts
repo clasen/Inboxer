@@ -57,13 +57,21 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     };
 
     // Sign-in: GET only shows a button, so link previews and scanners do not burn the link.
+    // A used or expired link on a browser that is already signed in just opens the app.
+    const signedInSession = async (c: Context<UiEnv>): Promise<Session | null> => {
+        const value = await getSignedCookie(c, secret, SESSION_COOKIE);
+        return value ? access.authenticate(value) : null;
+    };
+
     app.get("/auth/:token", async c => {
         const valid = await access.isLinkValid(c.req.param("token"));
+        if (!valid && (await signedInSession(c))) return c.redirect("/", 303);
         return page(c, S.signInTitle, V.signIn(c.req.param("token"), valid), null, valid ? 200 : 404);
     });
 
     app.post("/auth/:token", async c => {
         const signedIn = await access.consumeLoginLink(c.req.param("token"), clientInfo(c));
+        if (!signedIn && (await signedInSession(c))) return c.redirect("/", 303);
         if (!signedIn) return page(c, S.signInTitle, V.signIn("", false), null, 404);
         await setSignedCookie(c, SESSION_COOKIE, signedIn.secret, secret, cookieOptions);
         return c.redirect(signedIn.next, 303);

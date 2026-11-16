@@ -146,6 +146,19 @@ describe("http", () => {
         assert.equal((await req(h, `/threads/${thread.id}`, { cookie: sessionCookie(res) })).status, 200);
     });
 
+    test("a used link opens the app on a browser that is already signed in", async () => {
+        const link = await createLoginLink(testConfig(h.dataDir), {});
+        const path = new URL(link.url).pathname;
+        const cookie = sessionCookie(await req(h, path, { method: "POST" }));
+
+        for (const method of ["GET", "POST"]) {
+            const res = await req(h, path, { method, cookie });
+            assert.equal(res.status, 303);
+            assert.equal(res.headers.get("location"), "/");
+            assert.equal((await req(h, path, { method })).status, 404);
+        }
+    });
+
     test("createLoginLink mints a link from a script, without an MCP client", async () => {
         h.provider.addInbound({ providerId: "q" });
         await webhook(h, [{ type: "received", providerId: "q" }]);
