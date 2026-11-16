@@ -45,7 +45,7 @@ export function createInboxer(cfg: InboxerConfig, options: InboxerOptions = {}):
 
     return {
         fetch,
-        handler: getRequestListener(fetch) as Inboxer["handler"],
+        handler: getRequestListener(fetch, { overrideGlobalObjects: false }) as Inboxer["handler"],
         ready,
         async close() {
             await ready.catch(() => {});

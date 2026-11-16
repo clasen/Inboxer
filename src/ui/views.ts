@@ -1,7 +1,7 @@
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import type { MessageView } from "../core/mail.ts";
-import type { Message, Session, Thread } from "../types.ts";
+import type { Contact, Context, Message, Session, Thread } from "../types.ts";
 import { ASSETS } from "./assets.ts";
 import { S } from "./strings.ts";
 
@@ -90,7 +90,27 @@ export function messageCard(m: MessageView): View {
 </article>`;
 }
 
-export function draftCard(d: Message, history: MessageView[]): View {
+export interface ContextView {
+    context: Context | null;
+    contacts: Contact[];
+}
+
+/** Read-only context agents attached to the thread and its participants. */
+function contextBlock(ctx: ContextView | null): View | "" {
+    if (!ctx) return "";
+    const rows = [
+        ...ctx.contacts.map(c => ({ who: c.address, meta: c.meta, note: c.note })),
+        ...(ctx.context ? [{ who: S.thisThread, meta: ctx.context.meta, note: ctx.context.note }] : []),
+    ].filter(r => r.note || Object.keys(r.meta).length);
+    if (!rows.length) return "";
+    return h`<details class="context"><summary>${S.context}</summary>${join(rows.map(r => h`<section>
+  <div class="who">${r.who}</div>
+  ${when(Object.keys(r.meta).length, () => h`<dl>${join(Object.entries(r.meta).map(([k, v]) => h`<dt>${k}</dt><dd>${String(v)}</dd>`))}</dl>`)}
+  ${when(r.note, () => h`<p>${r.note}</p>`)}
+</section>`))}</details>`;
+}
+
+export function draftCard(d: Message, history: MessageView[], ctx: ContextView | null): View {
     return h`<article class="card" id="draft-${d.id}">
   <div class="meta">
     ${mailboxBadge(d.mailbox)}
@@ -100,6 +120,7 @@ export function draftCard(d: Message, history: MessageView[]): View {
   </div>
   <div class="meta"><span>${S.to}: <strong>${d.to.join(", ")}</strong></span>${when(d.cc.length, () => h`<span>${S.cc}: ${d.cc.join(", ")}</span>`)}</div>
   <div class="subject">${d.subject}</div>
+  ${contextBlock(ctx)}
   ${when(d.note, () => h`<div class="note">${d.note}</div>`)}
   <pre class="body">${d.text}</pre>
   <div class="actions">
@@ -164,9 +185,9 @@ export function draftDone(id: string, text: string): View {
     return h`<article class="card notice" id="draft-${id}">${text}</article>`;
 }
 
-export function draftsPage(drafts: { draft: Message; history: MessageView[] }[]): View {
+export function draftsPage(drafts: { draft: Message; history: MessageView[]; ctx: ContextView }[]): View {
     return h`<h1>${S.navDrafts}</h1>
-${drafts.length ? join(drafts.map(d => draftCard(d.draft, d.history))) : h`<p class="empty">${S.draftsEmpty}</p>`}`;
+${drafts.length ? join(drafts.map(d => draftCard(d.draft, d.history, d.ctx))) : h`<p class="empty">${S.draftsEmpty}</p>`}`;
 }
 
 export function inboxPage(threads: Thread[], mailboxes: string[], filter: { mailbox: string; status: string }, own: Set<string>): View {
@@ -199,9 +220,10 @@ function threadRow(t: Thread, own: Set<string>): View {
 </a>`;
 }
 
-export function threadPage(thread: Thread, items: View[]): View {
+export function threadPage(thread: Thread, items: View[], ctx: ContextView): View {
     return h`<h1>${thread.subject || "—"}</h1>
 <div class="meta">${mailboxBadge(thread.mailbox)}${archiveButton(thread)}</div>
+${contextBlock(ctx)}
 <section class="messages">${join(items)}</section>`;
 }
 

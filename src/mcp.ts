@@ -2,8 +2,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import type { Access } from "./auth.ts";
-import { ConflictError, toView, type Mail } from "./core/mail.ts";
-import type { Actor, Message } from "./types.ts";
+import { appUrl, threadPath } from "./config.ts";
+import { ConflictError, toView, type Mail, type MessageView } from "./core/mail.ts";
+import type { Actor, InboxerConfig, Message, Thread } from "./types.ts";
 
 const VERSION = "0.1.0";
 
@@ -11,30 +12,47 @@ function json(value: unknown) {
     return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
 }
 
-function wrap<A>(fn: (args: A) => Promise<unknown>) {
+type Cfg = Pick<InboxerConfig, "publicUrl">;
+
+/** `url` opens the message's thread in the review UI, scrolled to the draft when it is one. */
+function messageView(cfg: Cfg, m: MessageView) {
+    return { ...m, url: appUrl(cfg, threadPath(m.thread_id, m.status === "draft" ? m.id : undefined)) };
+}
+
+function draftView(cfg: Cfg, d: Message) {
+    return { ...messageView(cfg, toView(d)), bcc: d.bcc, html: d.html };
+}
+
+function threadView(cfg: Cfg, t: Thread) {
+    return { ...t, url: appUrl(cfg, threadPath(t.id)) };
+}
+
+function wrap<A>(cfg: Cfg, fn: (args: A) => Promise<unknown>) {
     return async (args: A) => {
         try {
             return json(await fn(args));
         } catch (err) {
             const body: Record<string, unknown> = { error: (err as Error).message };
-            if (err instanceof ConflictError) body.current = draftView(err.current);
+            if (err instanceof ConflictError) body.current = draftView(cfg, err.current);
             return { ...json(body), isError: true };
         }
     };
 }
 
-function draftView(d: Message) {
-    return { ...toView(d), bcc: d.bcc, html: d.html };
-}
-
 const addresses = z.array(z.string()).describe("Addresses, e.g. \"Ana <ana@example.com>\" or \"ana@example.com\"");
 const isoDate = z.string().describe("ISO 8601 timestamp");
+const metaFilter = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+    .describe("Every pair must match the thread's context or a participant's contact; values compare as text");
+const metaPatch = z.record(z.string().min(1), z.union([z.string(), z.number(), z.boolean(), z.null()]))
+    .describe("Keys to set; null removes a key; keys not sent are kept");
+const notePatch = z.string().nullable().describe("Replaces the note; null clears it");
 
 function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     const server = new McpServer({ name: "inboxer", version: VERSION });
+    const cfg = mail.cfg;
 
     server.registerTool("list_mailboxes", { description: "Configured mailboxes, plus the catch-all for unknown recipients." },
-        wrap(async () => mail.listMailboxes()));
+        wrap(cfg, async () => mail.listMailboxes()));
 
     server.registerTool("list_threads", {
         description: "Threads, newest first. status: unanswered (last message inbound and no pending draft), all (not archived), archived.",
@@ -43,39 +61,59 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
             status: z.enum(["unanswered", "all", "archived"]).optional().describe("Default: unanswered"),
             label: z.string().optional(),
             since: isoDate.optional(),
+            meta: metaFilter.optional(),
             limit: z.number().int().positive().optional().describe("Default: 50"),
         },
-    }, wrap(async args => mail.listThreads(args)));
+    }, wrap(cfg, async args => (await mail.listThreads(args)).map(t => threadView(cfg, t))));
 
     server.registerTool("search", {
-        description: "Full-text search over subject, body, from and to. Accent and case insensitive; every term must match.",
+        description: "Full-text search over subject, body, from and to. Accent and case insensitive; every term must match. Pass query, meta, or both.",
         inputSchema: {
-            query: z.string(),
+            query: z.string().optional(),
+            meta: metaFilter.optional(),
             mailbox: z.string().optional(),
             from: z.string().optional().describe("Substring of the sender address"),
             since: isoDate.optional(),
             until: isoDate.optional(),
             limit: z.number().int().positive().optional().describe("Default: 50"),
         },
-    }, wrap(async args => mail.search(args)));
+    }, wrap(cfg, async args => (await mail.search(args)).map(m => messageView(cfg, m))));
 
     server.registerTool("get_thread", {
-        description: "A thread with its messages as plain text, pending drafts included.",
+        description: "A thread with its messages as plain text, pending drafts included, plus the thread's context and the contacts of its participants.",
         inputSchema: { thread_id: z.string() },
-    }, wrap(async ({ thread_id }) => mail.getThread(thread_id)));
+    }, wrap(cfg, async ({ thread_id }) => {
+        const { thread, messages, ...context } = await mail.getThread(thread_id);
+        return { thread: threadView(cfg, thread), ...context, messages: messages.map(m => messageView(cfg, m)) };
+    }));
+
+    server.registerTool("get_contact", {
+        description: "Context stored for an email address: meta (e.g. ids in other systems) and a note. null when there is none.",
+        inputSchema: { address: z.string() },
+    }, wrap(cfg, async ({ address }) => mail.getContact(address)));
+
+    server.registerTool("set_contact", {
+        description: "Attach context to an email address, e.g. meta { license_id: \"BL-2231\" } or a note. Merges with what is stored. Shown in get_thread and in the review UI, and searchable with meta filters.",
+        inputSchema: { address: z.string(), meta: metaPatch.optional(), note: notePatch.optional() },
+    }, wrap(cfg, async ({ address, meta, note }) => mail.setContact(address, { meta, note }, actor)));
+
+    server.registerTool("set_thread_meta", {
+        description: "Attach context to a thread, e.g. meta { ticket: 45 } or a note such as \"promised an answer on Monday\". Merges with what is stored.",
+        inputSchema: { thread_id: z.string(), meta: metaPatch.optional(), note: notePatch.optional() },
+    }, wrap(cfg, async ({ thread_id, meta, note }) => mail.setThreadContext(thread_id, { meta, note }, actor)));
 
     server.registerTool("label", {
         description: "Add or remove labels. ids are message ids or thread ids (applies to every message in the thread).",
         inputSchema: { ids: z.array(z.string()), add: z.array(z.string()).optional(), remove: z.array(z.string()).optional() },
-    }, wrap(async ({ ids, add, remove }) => ({ updated: await mail.label(ids, add ?? [], remove ?? [], actor) })));
+    }, wrap(cfg, async ({ ids, add, remove }) => ({ updated: await mail.label(ids, add ?? [], remove ?? [], actor) })));
 
     server.registerTool("mark", {
         description: "Set read and/or archived. ids are message ids or thread ids.",
         inputSchema: { ids: z.array(z.string()), read: z.boolean().optional(), archived: z.boolean().optional() },
-    }, wrap(async ({ ids, read, archived }) => ({ updated: await mail.mark(ids, { read, archived }, actor) })));
+    }, wrap(cfg, async ({ ids, read, archived }) => ({ updated: await mail.mark(ids, { read, archived }, actor) })));
 
     server.registerTool("create_draft", {
-        description: "Create a draft for a human to review. Pass reply_to_id to reply (recipients, subject and threading are derived), or mailbox + to + subject for a new conversation. note is shown to the reviewer.",
+        description: "Create a draft for a human to review. Pass reply_to_id to reply (recipients, subject and threading are derived), or mailbox + to + subject for a new conversation. note is shown to the reviewer. The result's url opens the draft in the review UI; share it with the user.",
         inputSchema: {
             mailbox: z.string().optional(),
             reply_to_id: z.string().optional().describe("Message id to reply to"),
@@ -88,7 +126,7 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
             html: z.string().optional(),
             note: z.string().optional(),
         },
-    }, wrap(async a => draftView(await mail.createDraft({
+    }, wrap(cfg, async a => draftView(cfg, await mail.createDraft({
         mailbox: a.mailbox, replyToId: a.reply_to_id, replyAll: a.reply_all, to: a.to, cc: a.cc, bcc: a.bcc,
         subject: a.subject, text: a.text, html: a.html, note: a.note,
     }, actor))));
@@ -107,18 +145,18 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
             note: z.string().nullable().optional(),
             force: z.boolean().optional(),
         },
-    }, wrap(async ({ id, version, force, ...patch }) => draftView(await mail.updateDraft(id, version, patch, actor, force ?? false))));
+    }, wrap(cfg, async ({ id, version, force, ...patch }) => draftView(cfg, await mail.updateDraft(id, version, patch, actor, force ?? false))));
 
     server.registerTool("list_drafts", {
         description: "Pending drafts, newest first.",
         inputSchema: { mailbox: z.string().optional() },
-    }, wrap(async ({ mailbox }) => (await mail.listDrafts(mailbox)).map(draftView)));
+    }, wrap(cfg, async ({ mailbox }) => (await mail.listDrafts(mailbox)).map(d => draftView(cfg, d))));
 
     server.registerTool("discard_draft", { description: "Discard a pending draft.", inputSchema: { id: z.string() } },
-        wrap(async ({ id }) => { await mail.discardDraft(id, actor); return { discarded: id }; }));
+        wrap(cfg, async ({ id }) => { await mail.discardDraft(id, actor); return { discarded: id }; }));
 
     server.registerTool("send_draft", { description: "Send the last saved version of a draft.", inputSchema: { id: z.string() } },
-        wrap(async ({ id }) => toView(await mail.sendDraft(id, actor))));
+        wrap(cfg, async ({ id }) => messageView(cfg, toView(await mail.sendDraft(id, actor)))));
 
     server.registerTool("send", {
         description: "Send a new message directly, without review. Use only when your rules allow it.",
@@ -131,28 +169,31 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
             text: z.string(),
             html: z.string().optional(),
         },
-    }, wrap(async a => toView(await mail.send({ ...a }, actor))));
+    }, wrap(cfg, async a => messageView(cfg, toView(await mail.send({ ...a }, actor)))));
 
     server.registerTool("reply", {
         description: "Reply directly to a message, without review. Use only when your rules allow it.",
         inputSchema: { message_id: z.string().describe("Inboxer message id"), text: z.string(), reply_all: z.boolean().optional() },
-    }, wrap(async ({ message_id, text, reply_all }) => toView(await mail.reply(message_id, text, reply_all ?? false, actor))));
+    }, wrap(cfg, async ({ message_id, text, reply_all }) => messageView(cfg, toView(await mail.reply(message_id, text, reply_all ?? false, actor)))));
 
     server.registerTool("get_attachment", {
         description: "Temporary download URL for an inbound attachment.",
         inputSchema: { message_id: z.string(), attachment_id: z.string() },
-    }, wrap(async ({ message_id, attachment_id }) => ({ url: await mail.getAttachmentUrl(message_id, attachment_id) })));
+    }, wrap(cfg, async ({ message_id, attachment_id }) => ({ url: await mail.getAttachmentUrl(message_id, attachment_id) })));
 
     server.registerTool("create_login_link", {
-        description: "One-time link that signs one browser into the review UI. Expires unused after a few minutes.",
-        inputSchema: { label: z.string().optional().describe("Shown in the device list, e.g. \"Martin's phone\"") },
-    }, wrap(async ({ label }) => access.createLoginLink(actor, label ?? null)));
+        description: "One-time link that signs one browser into the review UI. Expires unused after a few minutes. Pass thread_id to land on that thread after signing in. Browsers already signed in can open a result's url directly.",
+        inputSchema: {
+            label: z.string().optional().describe("Shown in the device list, e.g. \"Martin's phone\""),
+            thread_id: z.string().optional().describe("Thread to open after signing in"),
+        },
+    }, wrap(cfg, async ({ label, thread_id }) => access.createLoginLink(actor, label ?? null, thread_id ?? null)));
 
     server.registerTool("list_sessions", { description: "Browsers signed into the UI." },
-        wrap(async () => access.listSessions()));
+        wrap(cfg, async () => access.listSessions()));
 
     server.registerTool("revoke_session", { description: "Sign a browser out of the UI.", inputSchema: { id: z.string() } },
-        wrap(async ({ id }) => ({ revoked: await access.revokeSession(id, actor) })));
+        wrap(cfg, async ({ id }) => ({ revoked: await access.revokeSession(id, actor) })));
 
     return server;
 }

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import DeepBase from "deepbase";
 import SqliteDriver from "deepbase-sqlite";
-import type { Actor, AuditEntry, LoginLink, Message, Session, Thread } from "./types.ts";
+import type { Actor, AuditEntry, Contact, Context, LoginLink, Message, Session, Thread } from "./types.ts";
 
 export function sha1(value: string): string {
     return createHash("sha1").update(value).digest("hex");
@@ -81,6 +81,31 @@ export class Store {
 
     async allThreads(): Promise<Thread[]> {
         return Object.values((await this.db.get("threads")) ?? {});
+    }
+
+    getContact(address: string): Promise<Contact | null> {
+        return this.db.get("contacts", sha1(address));
+    }
+
+    putContact(contact: Contact): Promise<unknown> {
+        return this.db.set("contacts", sha1(contact.address), contact);
+    }
+
+    async allContacts(): Promise<Contact[]> {
+        return Object.values((await this.db.get("contacts")) ?? {});
+    }
+
+    /** Kept apart from `threads/`, whose summary is rebuilt from the messages on every change. */
+    getThreadContext(threadId: string): Promise<Context | null> {
+        return this.db.get("thread_context", threadId);
+    }
+
+    putThreadContext(threadId: string, context: Context): Promise<unknown> {
+        return this.db.set("thread_context", threadId, context);
+    }
+
+    async allThreadContexts(): Promise<Record<string, Context>> {
+        return (await this.db.get("thread_context")) ?? {};
     }
 
     async draftIds(): Promise<string[]> {

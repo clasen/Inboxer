@@ -29,6 +29,8 @@ export const S = {
     discarded: "Draft discarded.",
     editedByHuman: "Edited by you",
     thread: "Thread",
+    thisThread: "This thread",
+    context: "Context",
     draft: "Draft",
 
     conflictTitle: "This draft changed while you were editing.",

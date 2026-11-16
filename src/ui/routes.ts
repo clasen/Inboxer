@@ -3,7 +3,7 @@ import { deleteCookie, getCookie, getSignedCookie, setCookie, setSignedCookie } 
 import type { Access } from "../auth.ts";
 import { bareAddress, splitAddresses } from "../core/address.ts";
 import { ConflictError, InvalidRequestError, type Mail, type MessageView } from "../core/mail.ts";
-import type { Actor, InboxerConfig, Session } from "../types.ts";
+import type { Actor, InboxerConfig, Message, Session } from "../types.ts";
 import { S } from "./strings.ts";
 import * as V from "./views.ts";
 
@@ -46,10 +46,10 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     });
 
     app.post("/auth/:token", async c => {
-        const sessionSecret = await access.consumeLoginLink(c.req.param("token"), clientInfo(c));
-        if (!sessionSecret) return page(c, S.signInTitle, V.signIn("", false), null, 404);
-        await setSignedCookie(c, SESSION_COOKIE, sessionSecret, secret, cookieOptions);
-        return c.redirect("/", 303);
+        const signedIn = await access.consumeLoginLink(c.req.param("token"), clientInfo(c));
+        if (!signedIn) return page(c, S.signInTitle, V.signIn("", false), null, 404);
+        await setSignedCookie(c, SESSION_COOKIE, signedIn.secret, secret, cookieOptions);
+        return c.redirect(signedIn.next, 303);
     });
 
     app.post("/theme", async c => {
@@ -77,22 +77,23 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         });
     }
 
-    const draftHistory = async (threadId: string, draftId: string): Promise<MessageView[]> => {
-        if (!(await mail.store.getThread(threadId))) return [];
-        const { messages } = await mail.getThread(threadId);
-        return messages.filter(m => m.id !== draftId && m.status !== "draft");
+    /** The sent and received messages around a draft, and the context of its thread. */
+    const draftExtras = async (draft: Message): Promise<{ history: MessageView[]; ctx: V.ContextView }> => {
+        const { messages, context, contacts } = await mail.getThread(draft.thread_id);
+        return { history: messages.filter(m => m.id !== draft.id && m.status !== "draft"), ctx: { context, contacts } };
     };
 
     app.get("/", async c => {
         const drafts = await mail.listDrafts();
-        const items = await Promise.all(drafts.map(async draft => ({ draft, history: await draftHistory(draft.thread_id, draft.id) })));
+        const items = await Promise.all(drafts.map(async draft => ({ draft, ...(await draftExtras(draft)) })));
         return page(c, S.navDrafts, V.draftsPage(items), "drafts");
     });
 
     app.get("/drafts/:id/card", async c => {
         const draft = await mail.store.requireMessage(c.req.param("id"));
         if (draft.status !== "draft") return c.html(V.draftDone(draft.id, `${S.status}: ${draft.status}`));
-        return c.html(V.draftCard(draft, await draftHistory(draft.thread_id, draft.id)));
+        const { history, ctx } = await draftExtras(draft);
+        return c.html(V.draftCard(draft, history, ctx));
     });
 
     app.get("/drafts/:id/edit", async c => {
@@ -119,7 +120,8 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
                 return c.html(V.draftDone(id, `${S.sentTo} ${sent.to.join(", ")}`));
             }
             const draft = await mail.store.requireMessage(id);
-            return c.html(V.draftCard(draft, await draftHistory(draft.thread_id, id)));
+            const { history, ctx } = await draftExtras(draft);
+            return c.html(V.draftCard(draft, history, ctx));
         } catch (err) {
             if (err instanceof ConflictError) return c.html(V.draftEditor(err.current, form, err.current));
             if (err instanceof InvalidRequestError) return c.html(V.draftDone(id, err.message));
@@ -166,10 +168,10 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
             await mail.mark([id], { read: true }, uiActor(c.get("session")));
             thread = await mail.store.requireThread(id);
         }
-        const { messages } = await mail.getThread(id);
+        const { messages, context, contacts } = await mail.getThread(id);
         const items = await Promise.all(messages.map(async m =>
-            m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id), []) : V.messageCard(m)));
-        return page(c, thread.subject || S.navInbox, V.threadPage(thread, items), "inbox");
+            m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id), [], null) : V.messageCard(m)));
+        return page(c, thread.subject || S.navInbox, V.threadPage(thread, items, { context, contacts }), "inbox");
     });
 
     app.post("/threads/:id/archive", async c => {

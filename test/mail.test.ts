@@ -157,4 +157,48 @@ describe("mail core", () => {
         assert.equal(thread.archived, false);
         assert.equal(thread.unread, 1);
     });
+
+    test("contact context merges by key, null removes, and addresses are normalized", async () => {
+        await h.mail.setContact("Ana <ANA@customer.test>", { meta: { license_id: "BL-2231", plan: "trial" }, note: "Asked twice" }, agent);
+        const updated = await h.mail.setContact("ana@customer.test", { meta: { plan: null, crm_id: 991 } }, agent);
+        assert.deepEqual(updated.meta, { license_id: "BL-2231", crm_id: 991 });
+        assert.equal(updated.note, "Asked twice");
+        assert.equal(updated.updated_by, "agent:schedule");
+        assert.equal((await h.mail.setContact("ana@customer.test", { note: null }, agent)).note, null);
+        await assert.rejects(h.mail.setContact("not-an-address", { note: "x" }, agent), InvalidRequestError);
+        await assert.rejects(h.mail.setContact("a@b.test", { meta: { " ": 1 } }, agent), InvalidRequestError);
+        assert.ok((await h.store.auditEntries()).some(e => e.action === "contact.update" && e.target === "ana@customer.test"));
+    });
+
+    test("meta filters find threads through the contact or the thread context", async () => {
+        h.provider.addInbound({ providerId: "a", from: "ana@customer.test" });
+        h.provider.addInbound({ providerId: "b", from: "bob@other.test", subject: "Invoice" });
+        const anaThread = (await h.store.requireMessage(await h.mail.ingest("a"))).thread_id;
+        const bobThread = (await h.store.requireMessage(await h.mail.ingest("b"))).thread_id;
+        await h.mail.setContact("ana@customer.test", { meta: { crm_id: 991 } }, agent);
+        await h.mail.setThreadContext(bobThread, { meta: { ticket: "45" } }, agent);
+
+        assert.deepEqual((await h.mail.listThreads({ status: "all", meta: { crm_id: "991" } })).map(t => t.id), [anaThread]);
+        assert.deepEqual((await h.mail.listThreads({ status: "all", meta: { ticket: 45 } })).map(t => t.id), [bobThread]);
+        assert.deepEqual(await h.mail.listThreads({ status: "all", meta: { crm_id: 1 } }), []);
+        assert.equal((await h.mail.search({ meta: { crm_id: 991 } }))[0]!.thread_id, anaThread);
+        assert.equal((await h.mail.search({ query: "invoice", meta: { crm_id: 991 } })).length, 0);
+        await assert.rejects(h.mail.search({}), InvalidRequestError);
+    });
+
+    test("getThread returns the thread context and external contacts, which survive new messages", async () => {
+        h.provider.addInbound({ providerId: "a", messageId: "<a@c.test>", from: "ana@customer.test" });
+        const threadId = (await h.store.requireMessage(await h.mail.ingest("a"))).thread_id;
+        await h.mail.setThreadContext(threadId, { note: "promised an answer on Monday" }, agent);
+        await h.mail.setContact("ana@customer.test", { meta: { crm_id: 991 } }, agent);
+        await h.mail.setContact("support@inboxer.test", { note: "own address" }, agent);
+        h.provider.addInbound({ providerId: "b", inReplyTo: "<a@c.test>", from: "ana@customer.test" });
+        await h.mail.ingest("b");
+
+        const { context, contacts, messages } = await h.mail.getThread(threadId);
+        assert.equal(messages.length, 2);
+        assert.equal(context?.note, "promised an answer on Monday");
+        assert.deepEqual(contacts.map(c => c.address), ["ana@customer.test"]);
+        await assert.rejects(h.mail.setThreadContext("missing", { note: "x" }, agent));
+    });
 });

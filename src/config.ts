@@ -1,6 +1,16 @@
 import { isAbsolute } from "node:path";
 import { CATCHALL, type InboxerConfig } from "./types.ts";
 
+/** Absolute URL of an app path under `publicUrl`. */
+export function appUrl(cfg: Pick<InboxerConfig, "publicUrl">, path: string): string {
+    return cfg.publicUrl.replace(/\/$/, "") + path;
+}
+
+/** UI path of a thread, scrolled to one of its drafts when given. */
+export function threadPath(threadId: string, draftId?: string): string {
+    return `/threads/${encodeURIComponent(threadId)}` + (draftId ? `#draft-${encodeURIComponent(draftId)}` : "");
+}
+
 function fail(path: string, expected: string): never {
     throw new Error(`Invalid inboxer config: ${path} must be ${expected}`);
 }

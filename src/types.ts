@@ -81,6 +81,20 @@ export interface Thread {
     message_ids: string[];
 }
 
+export type MetaValue = string | number | boolean;
+
+/** Context a consumer attaches to a contact or a thread. Inboxer stores it without interpreting it. */
+export interface Context {
+    meta: Record<string, MetaValue>;
+    note: string | null;
+    updated_at: string;
+    updated_by: string;
+}
+
+export interface Contact extends Context {
+    address: string;
+}
+
 export interface AuditEntry {
     action: string;
     actor: string;
@@ -94,6 +108,8 @@ export interface LoginLink {
     expires_at: string;
     created_by: string;
     label: string | null;
+    /** App path to open after signing in. */
+    next: string | null;
 }
 
 export interface Session {

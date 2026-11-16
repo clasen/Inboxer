@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { DeliveryStatus, MailProvider, ProviderEvent } from "../provider/types.ts";
 import { nid, type Store } from "../store.ts";
-import { CATCHALL, type Actor, type InboxerConfig, type MailboxConfig, type Message, type Thread } from "../types.ts";
+import { CATCHALL, type Actor, type Contact, type Context, type InboxerConfig, type MailboxConfig, type Message, type MetaValue, type Thread } from "../types.ts";
 import { bareAddress, domainOf, formatAddress } from "./address.ts";
+import { mergeContext, metaMatches, type ContextPatch } from "./context.ts";
 import { htmlToText, replySubject, textToHtml, tokenize } from "./text.ts";
 import { messageTime, participantsOf, refreshThread, resolveThreadId, threadMessages } from "./threads.ts";
 
@@ -31,11 +32,14 @@ export interface ListThreadsInput {
     status?: ThreadStatus;
     label?: string;
     since?: string;
+    /** Threads whose context, or a participant's contact, has every pair. */
+    meta?: Record<string, MetaValue>;
     limit?: number;
 }
 
 export interface SearchInput {
-    query: string;
+    query?: string;
+    meta?: Record<string, MetaValue>;
     mailbox?: string;
     from?: string;
     since?: string;
@@ -214,9 +218,21 @@ export class Mail {
 
     // Queries
 
+    /** Matches a thread by its own context or by any participant's contact. */
+    private async metaFilter(wanted: Record<string, MetaValue> | undefined) {
+        if (!wanted || !Object.keys(wanted).length) return null;
+        const threadContexts = await this.store.allThreadContexts();
+        const contacts = new Map((await this.store.allContacts()).map(c => [c.address, c]));
+        return (threadId: string, participants: string[]) =>
+            metaMatches(threadContexts[threadId]?.meta, wanted) ||
+            participants.some(p => metaMatches(contacts.get(p)?.meta, wanted));
+    }
+
     async listThreads(input: ListThreadsInput = {}): Promise<Thread[]> {
         const status = input.status ?? "unanswered";
+        const byMeta = await this.metaFilter(input.meta);
         const threads = (await this.store.allThreads()).filter(t => {
+            if (byMeta && !byMeta(t.id, t.participants)) return false;
             if (input.mailbox && t.mailbox !== input.mailbox) return false;
             if (input.label && !t.labels[input.label]) return false;
             if (input.since && t.last_at < input.since) return false;
@@ -229,11 +245,13 @@ export class Mail {
     }
 
     async search(input: SearchInput): Promise<MessageView[]> {
-        const terms = tokenize(input.query);
-        if (!terms.length) throw new InvalidRequestError("query has no searchable terms");
+        const terms = tokenize(input.query ?? "");
+        const byMeta = await this.metaFilter(input.meta);
+        if (!terms.length && !byMeta) throw new InvalidRequestError("pass a query with searchable terms, meta, or both");
         const from = input.from?.toLowerCase();
         const hits = (await this.store.allMessages()).filter(m => {
             if (m.status === "discarded") return false;
+            if (byMeta && !byMeta(m.thread_id, participantsOf(m))) return false;
             if (input.mailbox && m.mailbox !== input.mailbox) return false;
             if (from && !bareAddress(m.from).includes(from)) return false;
             const at = messageTime(m);
@@ -246,9 +264,48 @@ export class Mail {
         return hits.slice(0, input.limit ?? 50).map(toView);
     }
 
-    async getThread(threadId: string): Promise<{ thread: Thread; messages: MessageView[] }> {
+    async getThread(threadId: string): Promise<{ thread: Thread; context: Context | null; contacts: Contact[]; messages: MessageView[] }> {
         const thread = await this.store.requireThread(threadId);
-        return { thread, messages: (await threadMessages(this.store, thread)).map(toView) };
+        return { thread, ...(await this.contextOf(thread)), messages: (await threadMessages(this.store, thread)).map(toView) };
+    }
+
+    /** The thread's own context and the contacts of its external participants that have one. */
+    async contextOf(thread: Thread): Promise<{ context: Context | null; contacts: Contact[] }> {
+        const external = thread.participants.filter(p => !this.ownAddresses.has(p));
+        const contacts = (await Promise.all(external.map(p => this.store.getContact(p)))).filter((c): c is Contact => !!c);
+        return { context: await this.store.getThreadContext(thread.id), contacts };
+    }
+
+    // Context
+
+    getContact(address: string): Promise<Contact | null> {
+        return this.store.getContact(bareAddress(address));
+    }
+
+    async setContact(address: string, patch: ContextPatch, actor: Actor): Promise<Contact> {
+        const bare = bareAddress(address);
+        if (!bare.includes("@")) throw new InvalidRequestError(`"${address}" is not an email address`);
+        return this.store.serialize(async () => {
+            const contact: Contact = { address: bare, ...this.merge(await this.store.getContact(bare), patch, actor) };
+            await this.store.putContact(contact);
+            await this.store.audit("contact.update", actor, bare, { ...patch });
+            return contact;
+        });
+    }
+
+    setThreadContext(threadId: string, patch: ContextPatch, actor: Actor): Promise<Context> {
+        return this.store.serialize(async () => {
+            await this.store.requireThread(threadId);
+            const context = this.merge(await this.store.getThreadContext(threadId), patch, actor);
+            await this.store.putThreadContext(threadId, context);
+            await this.store.audit("thread.context", actor, threadId, { ...patch });
+            return context;
+        });
+    }
+
+    private merge(existing: Context | null, patch: ContextPatch, actor: Actor): Context {
+        if (Object.keys(patch.meta ?? {}).some(key => !key.trim())) throw new InvalidRequestError("meta keys must be non-empty");
+        return mergeContext(existing, patch, actor);
     }
 
     async listDrafts(mailbox?: string): Promise<Message[]> {

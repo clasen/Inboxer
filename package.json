@@ -16,7 +16,8 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "skills/inboxer/SKILL.md"
   ],
   "engines": {
     "node": ">=22.16.0"
@@ -30,16 +31,33 @@
   },
   "keywords": [
     "email",
+    "mail",
     "mailbox",
     "inbox",
-    "mcp",
-    "agent",
-    "resend",
+    "inbound-email",
     "drafts",
+    "threading",
     "support",
+    "helpdesk",
+    "customer-support",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "agent",
+    "ai",
+    "llm",
+    "claude",
+    "skill",
+    "resend",
+    "webhook",
+    "self-hosted",
     "htmx",
     "hono",
     "sqlite",
+    "deepbase",
+    "roster-server",
+    "bun",
+    "nodejs",
     "clasen"
   ],
   "author": "Martin Clasen",

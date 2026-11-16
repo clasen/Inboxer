@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { appUrl, threadPath } from "./config.ts";
 import { sha256, type Store } from "./store.ts";
 import type { Actor, InboxerConfig, LoginLink, Session } from "./types.ts";
 
@@ -33,7 +34,9 @@ export class Access {
         this.cfg = cfg;
     }
 
-    async createLoginLink(actor: Actor, label: string | null): Promise<{ url: string; expires_at: string }> {
+    /** `threadId` makes the link open that thread after signing in. */
+    async createLoginLink(actor: Actor, label: string | null, threadId: string | null = null): Promise<{ url: string; expires_at: string }> {
+        if (threadId) await this.store.requireThread(threadId);
         const token = randomBytes(32).toString("base64url");
         const now = Date.now();
         const link: LoginLink = {
@@ -41,12 +44,13 @@ export class Access {
             expires_at: new Date(now + this.cfg.ui.loginLinkTtlMin * 60_000).toISOString(),
             created_by: actor.name,
             label,
+            next: threadId ? threadPath(threadId) : null,
         };
         await this.store.serialize(async () => {
             await this.store.putLoginLink(sha256(token), link);
             await this.store.audit("login_link.create", actor, null, { label });
         });
-        return { url: `${this.cfg.publicUrl.replace(/\/$/, "")}/auth/${token}`, expires_at: link.expires_at };
+        return { url: appUrl(this.cfg, `/auth/${token}`), expires_at: link.expires_at };
     }
 
     async isLinkValid(token: string): Promise<boolean> {
@@ -55,7 +59,7 @@ export class Access {
     }
 
     /** Check-and-delete runs inside the write queue, so only one caller can turn a link into a session. */
-    consumeLoginLink(token: string, client: ClientInfo): Promise<string | null> {
+    consumeLoginLink(token: string, client: ClientInfo): Promise<{ secret: string; next: string } | null> {
         const hash = sha256(token);
         return this.store.serialize(async () => {
             const link = await this.store.getLoginLink(hash);
@@ -80,7 +84,7 @@ export class Access {
                 user_agent: client.userAgent,
                 created_by: link.created_by,
             });
-            return secret;
+            return { secret, next: link.next ?? "/" };
         });
     }
 
