@@ -12,50 +12,37 @@ Inboxer stores every inbound and outbound email in one SQLite file, exposes MCP 
 
 ## Set up
 
-Install with `npm install inboxer`; requires Node.js 22.16+ or Bun. `createInboxer` takes a plain object; the examples load it with Configre (`npm install configre`), which merges `index.cjs` and `index.secret.cjs`.
-
-`config/index.cjs` (public):
+Install with `npm install inboxer`; requires Node.js 22.16+ or Bun. `createInboxer` takes one plain object; load it the way the project already loads configuration (JSON file, environment variables, a loader such as Configre).
 
 ```javascript
-module.exports = {
+const config = {
     publicUrl: "https://inboxer.example.com",
     dataDir: "/var/lib/inboxer",          // absolute
     syncIntervalMin: 10,
     threadWindowDays: 30,
     mailboxes: {
         support: { address: "support@example.com", name: "Example Support",
-                   signatureText: "-- Example Support", signatureHtml: "<p>-- Example Support</p>" }
+                   signatureText: "-- Example Support", signatureHtml: "<p>-- Example Support</p>",
+                   tokens: { "support-schedule": "<openssl rand -hex 32>" } }   // support only
     },
-    provider: { type: "resend" },
-    ui: { loginLinkTtlMin: 10 }
+    provider: { type: "resend", apiKey: "re_...", webhookSecret: "whsec_..." },
+    mcp: { tokens: { "admin": "<openssl rand -hex 32>" } },                     // every mailbox
+    ui: { cookieSecret: "<openssl rand -hex 32>", loginLinkTtlMin: 10 }
 };
 ```
 
-`config/index.secret.cjs` (Configre encrypts it):
-
-```javascript
-module.exports = {
-    provider: { apiKey: "re_...", webhookSecret: "whsec_..." },
-    mcp: { tokens: { "admin": "<openssl rand -hex 32>" } },                        // every mailbox
-    mailboxes: { support: { tokens: { "support-schedule": "<openssl rand -hex 32>" } } },  // support only
-    ui: { cookieSecret: "<openssl rand -hex 32>" }
-};
-```
-
-- Every key above is required except the mailbox signatures; `createInboxer` throws on a missing or invalid one. There are no defaults.
+- Every key above is required except the mailbox signatures and mailbox tokens; `createInboxer` throws on a missing or invalid one. There are no defaults.
 - `mailboxes` is an object keyed by id. `catchall` is reserved: unknown recipients land there, and it cannot send.
-- Secrets never go in `index.cjs`.
+- `provider.apiKey`, `provider.webhookSecret`, every token and `ui.cookieSecret` are secrets: keep them out of Git and out of logs.
 
 ## Serve
 
 `createInboxer(cfg, { provider? })` is synchronous, does not listen, and returns `{ fetch, handler, ready, close }`. Requests wait for `ready`.
 
 ```typescript
-import Configre from "configre";
-import { join } from "node:path";
 import { createInboxer } from "inboxer";
 
-const inboxer = createInboxer(Configre(join(import.meta.dirname, "config")));
+const inboxer = createInboxer(config);
 Bun.serve({ port: 4000, fetch: inboxer.fetch });       // or createServer(inboxer.handler) on Node
 ```
 
@@ -85,7 +72,7 @@ Implement `MailProvider` (exported types) and pass it as `createInboxer(cfg, { p
 
 One token per client, so the audit log names the actor and revoking one leaves the rest. Revoke by deleting the entry and restarting.
 
-Tokens in `mcp.tokens` reach every mailbox. A token under `mailboxes.<id>.tokens` (secret file) reaches only that mailbox: everything else reads as not found, it reaches only contacts in its own threads, and its login links sign browsers into the same mailboxes. Repeat the same name and token under several mailboxes to reach all of them.
+Tokens in `mcp.tokens` reach every mailbox. A token under `mailboxes.<id>.tokens` reaches only that mailbox: everything else reads as not found, it reaches only contacts in its own threads, and its login links sign browsers into the same mailboxes. Repeat the same name and token under several mailboxes to reach all of them.
 
 ```bash
 claude mcp add --transport http inboxer https://inboxer.example.com/mcp --header "Authorization: Bearer <token>"

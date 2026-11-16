@@ -35,12 +35,10 @@ Requires **Node.js 22.16 or later**, or **Bun**.
 npm install inboxer
 ```
 
-`createInboxer` takes a plain config object, so load it however your project does. The examples use [Configre](https://github.com/clasen/Configre) (`npm install configre`), which merges a public and a secret file and keeps the secrets encrypted in Git.
-
-Create `config/index.cjs` with the public settings:
+`createInboxer` takes one plain object:
 
 ```javascript
-module.exports = {
+const config = {
     publicUrl: "https://inboxer.example.com",
     dataDir: "/var/lib/inboxer",       // absolute path
     syncIntervalMin: 10,
@@ -50,20 +48,13 @@ module.exports = {
                     signatureText: "-- Example Support", signatureHtml: "<p>-- Example Support</p>" },
         feedback: { address: "feedback@example.com", name: "Example" }
     },
-    provider: { type: "resend" },
-    ui: { loginLinkTtlMin: 10 }
-};
-```
-
-Put the secrets in `config/index.secret.cjs`; Configre merges them over the public file:
-
-```javascript
-module.exports = {
-    provider: { apiKey: "re_...", webhookSecret: "whsec_..." },
+    provider: { type: "resend", apiKey: "re_...", webhookSecret: "whsec_..." },
     mcp: { tokens: { "support-schedule": "...", "laptop": "..." } },
-    ui: { cookieSecret: "..." }
+    ui: { cookieSecret: "...", loginLinkTtlMin: 10 }
 };
 ```
+
+Load it from wherever your project keeps configuration: a JSON file, environment variables, a secrets manager. `provider.apiKey`, `provider.webhookSecret`, the MCP tokens and `ui.cookieSecret` are secrets, so keep them out of Git. [Configre](https://github.com/clasen/Configre) is one way to do that: it merges a public file and an encrypted secret file into one object.
 
 Generate each token and the cookie secret with:
 
@@ -74,11 +65,9 @@ openssl rand -hex 32
 Serve it with Bun:
 
 ```typescript
-import Configre from "configre";
-import { join } from "node:path";
 import { createInboxer } from "inboxer";
 
-const inboxer = createInboxer(Configre(join(import.meta.dirname, "config")));
+const inboxer = createInboxer(config);
 Bun.serve({ port: 4000, fetch: inboxer.fetch });
 ```
 
@@ -124,12 +113,11 @@ The function is synchronous, so a host that needs a synchronous factory can call
 ```typescript
 // www/inboxer.example.com/index.ts
 import type { SiteFactory } from "roster-server";
-import Configre from "configre";
-import { join } from "node:path";
 import { createInboxer } from "inboxer";
+import { config } from "./config.ts";  // however you load it
 
 const site: SiteFactory = server => {
-    const inboxer = createInboxer(Configre(join(import.meta.dirname, "config")));
+    const inboxer = createInboxer(config);
     server.onClose(() => inboxer.close());
     return inboxer.handler;
 };
@@ -147,13 +135,13 @@ With roster's default isolation the site runs in its own process, so the databas
 | `syncIntervalMin` | Minutes between backup syncs with the provider |
 | `threadWindowDays` | How far back a subject match may join an existing thread |
 | `mailboxes.<id>` | `address`, `name`, optional `signatureText` and `signatureHtml` |
-| `provider` | `type` plus the provider's own options (secrets go in the secret file) |
+| `provider` | `type` plus the provider's own options, such as Resend's `apiKey` and `webhookSecret` |
 | `mcp.tokens.<name>` | Bearer tokens for MCP that reach every mailbox; the name is recorded as the actor in the audit log |
 | `mailboxes.<id>.tokens.<name>` | Bearer tokens that reach only that mailbox |
 | `ui.cookieSecret` | Signs the UI session cookie |
 | `ui.loginLinkTtlMin` | Minutes before an unused login link expires |
 
-`mailboxes` is an object keyed by id rather than an array, so a Configre profile can override one mailbox without repeating the others. Mail sent to an address that matches no mailbox lands in the reserved `catchall` mailbox, which can be read but cannot send.
+`mailboxes` is an object keyed by id rather than an array, so a per-environment override can replace one mailbox without repeating the others. Mail sent to an address that matches no mailbox lands in the reserved `catchall` mailbox, which can be read but cannot send.
 
 ## Providers
 
@@ -220,17 +208,15 @@ The MCP server is at `<publicUrl>/mcp`. It speaks Streamable HTTP without sessio
 
 ### Connecting a client
 
-Give each client its own token, so the audit log shows who did what and you can revoke one without touching the rest. Add it under `mcp.tokens` in `config/index.secret.cjs`:
+Give each client its own token, so the audit log shows who did what and you can revoke one without touching the rest. Add it under `mcp.tokens`:
 
 ```javascript
-module.exports = {
-    mcp: {
-        tokens: {
-            "support-schedule": "3f9c...",  // openssl rand -hex 32
-            "laptop": "a71e..."
-        }
+mcp: {
+    tokens: {
+        "support-schedule": "3f9c...",  // openssl rand -hex 32
+        "laptop": "a71e..."
     }
-};
+}
 ```
 
 Restart Inboxer to load it. To revoke a token, delete its entry and restart.
@@ -240,13 +226,11 @@ Restart Inboxer to load it. To revoke a token, delete its entry and restart.
 A token under `mcp.tokens` reaches every mailbox and the catch-all. To give a team or a job access to one mailbox only, put its token under that mailbox instead:
 
 ```javascript
-module.exports = {
-    mcp: { tokens: { "admin": "3f9c..." } },                       // every mailbox
-    mailboxes: {
-        feedback: { tokens: { "feedback-bot": "a71e..." } },        // only feedback
-        legal: { tokens: { "legal-team": "c2d4..." } }              // only legal
-    }
-};
+mcp: { tokens: { "admin": "3f9c..." } },                                              // every mailbox
+mailboxes: {
+    feedback: { address: "feedback@example.com", name: "Example", tokens: { "feedback-bot": "a71e..." } },  // only feedback
+    legal:    { address: "legal@example.com",    name: "Legal",   tokens: { "legal-team": "c2d4..." } }     // only legal
+}
 ```
 
 A mailbox token sees nothing else: other mailboxes' threads, messages and drafts read as not found, and it cannot send from them. Contacts are shared by address, but it reaches only the contacts that take part in its own threads. A login link it creates signs a browser into the same mailboxes, and it lists and revokes only those browsers. To reach several mailboxes, put the same name and token under each. A name always maps to one token, and a token to one name.
@@ -329,11 +313,10 @@ If you have no MCP client at hand, mint a link from a script on the server, with
 
 ```javascript
 // login-link.mjs
-import Configre from "configre";
-import { join } from "node:path";
 import { createLoginLink } from "inboxer";
+import { config } from "./config.js";  // however the app loads it
 
-const { url } = await createLoginLink(Configre(join(import.meta.dirname, "config")), { label: process.argv[2] });
+const { url } = await createLoginLink(config, { label: process.argv[2] });
 console.log(url);
 ```
 
