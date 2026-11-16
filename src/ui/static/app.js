@@ -15,6 +15,25 @@ document.addEventListener("click", event => {
     }
 });
 
+// A draft's editor opens in the edit sheet; one draft is edited at a time.
+document.addEventListener("htmx:afterSwap", event => {
+    const sheet = event.detail.target;
+    if (sheet.id !== "edit-sheet") return;
+    if (!sheet.open) sheet.showModal();
+    sheet.querySelector("textarea")?.focus();
+});
+
+// Closing the sheet on a reply started from the reply box shows its new draft in the thread.
+document.addEventListener("close", event => {
+    if (event.target.id === "edit-sheet" && event.target.querySelector("[data-reload-on-close]")) location.reload();
+}, true);
+
+document.addEventListener("change", event => {
+    if (event.target.id === "compose-files") {
+        document.getElementById("compose-file-names").textContent = [...event.target.files].map(f => f.name).join(", ");
+    }
+});
+
 document.addEventListener("keydown", event => {
     if (event.key === "Escape") document.body.classList.remove("context-open");
 });

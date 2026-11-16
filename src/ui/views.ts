@@ -34,6 +34,7 @@ const ICONS = {
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
     send: '<path d="M5 12h14"/><path d="M13 6l6 6-6 6"/>',
     close: '<path d="M6 6l12 12M18 6L6 18"/>',
+    attach: '<path d="M20.5 11.5l-8.2 8.2a5 5 0 01-7-7l8.2-8.2a3.3 3.3 0 014.7 4.7l-8.2 8.2a1.7 1.7 0 01-2.4-2.4l7.6-7.6"/>',
 } as const;
 
 function icon(name: keyof typeof ICONS): View {
@@ -89,7 +90,6 @@ export interface LayoutOptions {
     page: Page;
     signedIn: boolean;
     draftCount?: number;
-    domains?: string[];
     /** Mailboxes the session can send from; New mail shows only when there is one. */
     senders?: Mailbox[];
     /** Thread pages fill the screen on a phone, so the tab bar gives way to the reply box. */
@@ -114,7 +114,6 @@ export function layout(title: string, body: View, opts: LayoutOptions): View {
 <body class="${opts.signedIn ? "app" : ""} ${opts.fullScreen ? "full" : ""}">
 ${when(opts.signedIn, () => h`<aside class="sidebar">
   <div class="brand">${S.appName}<span>.</span></div>
-  ${when(opts.domains?.length, () => h`<div class="domain">${opts.domains!.join(" · ")}</div>`)}
   ${when(canSend, () => h`<button type="button" class="primary new-mail" data-compose>${icon("plus")}${S.newMail}</button>`)}
   <nav class="side-nav" aria-label="${S.mainNav}">
     ${link("drafts", "/", S.navDrafts, "drafts", count)}
@@ -132,6 +131,7 @@ ${when(opts.signedIn, () => h`<nav class="tabbar" aria-label="${S.mainNav}">
   ${link("settings", "/settings", S.navSettings, "settings")}
 </nav>`)}
 ${when(opts.signedIn && canSend, () => composeDialog(opts.senders!))}
+${when(opts.signedIn, () => h`<dialog class="sheet" id="edit-sheet" aria-label="${S.edit}"></dialog>`)}
 </body>
 </html>`;
 }
@@ -139,7 +139,7 @@ ${when(opts.signedIn && canSend, () => composeDialog(opts.senders!))}
 /** New mail, opened from the sidebar or the tab bar; a bottom sheet on a phone. */
 function composeDialog(senders: Mailbox[]): View {
     return h`<dialog class="sheet" id="compose" aria-label="${S.newMail}">
-  <form method="post" action="/compose">
+  <form method="post" action="/compose" enctype="multipart/form-data" data-drop>
     <div class="grabber" aria-hidden="true"></div>
     <button type="button" class="icon-btn sheet-close" data-close aria-label="${S.close}">${icon("close")}</button>
     <div class="field compact">
@@ -163,6 +163,8 @@ function composeDialog(senders: Mailbox[]): View {
     </div>
     <textarea name="text" aria-label="${S.body}" required></textarea>
     <div class="sheet-actions">
+      <label class="icon-btn" aria-label="${S.attach}">${icon("attach")}<input type="file" name="files" id="compose-files" multiple hidden></label>
+      <output class="sheet-files" id="compose-file-names"></output>
       <button type="submit" name="action" value="save">${S.saveDraft}</button>
       <button type="submit" name="action" value="send" class="primary">${S.send}${icon("send")}</button>
     </div>
@@ -226,20 +228,6 @@ function recipients(m: MessageView): View | "" {
     return h`<div class="meta">${when(m.to.length, () => h`<span>${S.to}: ${m.to.join(", ")}</span>`)}${when(m.cc.length, () => h`<span>${S.cc}: ${m.cc.join(", ")}</span>`)}</div>`;
 }
 
-/** A message in a draft's history on the Drafts page. */
-export function messageCard(m: MessageView): View {
-    return h`<article class="card ${m.direction}">
-  <div class="meta">
-    <strong>${m.from}</strong>
-    <span>${formatDate(m.date)}</span>
-    ${when(m.direction === "out" && m.status !== "draft", () => h`<span>${m.status}</span>`)}
-  </div>
-  ${recipients(m)}
-  <pre class="body">${withoutImagePlaceholders(m)}</pre>
-  ${attachments(m)}
-</article>`;
-}
-
 /** A message in a thread: received ones on the left, ours on the right. */
 export function messageBubble(m: MessageView, showSender: boolean): View {
     const mine = m.direction === "out";
@@ -273,14 +261,6 @@ function contextSections(rows: ReturnType<typeof contextRows>): View {
 </section>`));
 }
 
-/** Read-only context agents attached to the thread and its participants, folded on a draft card. */
-function contextBlock(ctx: ContextView | null): View | "" {
-    if (!ctx) return "";
-    const rows = contextRows(ctx);
-    if (!rows.length) return "";
-    return h`<details class="context"><summary>${S.context}</summary>${contextSections(rows)}</details>`;
-}
-
 /** A send or discard in its undo window; reloads itself when the window closes. */
 function pendingCard(d: Message): View {
     const left = Math.max(0, Date.parse(d.pending!.at) - Date.now());
@@ -293,8 +273,8 @@ function pendingCard(d: Message): View {
 </article>`;
 }
 
-/** A draft for review: a card on the Drafts page, a bubble on our side of a thread. */
-export function draftCard(d: Message, history: MessageView[], ctx: ContextView | null): View {
+/** A draft for review, on our side of its thread. */
+export function draftCard(d: Message): View {
     if (d.pending) return pendingCard(d);
     return h`<article class="card draft" id="draft-${d.id}">
   <div class="meta">
@@ -306,19 +286,14 @@ export function draftCard(d: Message, history: MessageView[], ctx: ContextView |
     <div class="meta"><span>${S.to}: <strong>${d.to.join(", ")}</strong></span>${when(d.cc.length, () => h`<span>${S.cc}: ${d.cc.join(", ")}</span>`)}</div>
     <div class="subject">${d.subject}</div>
   </div>
-  ${contextBlock(ctx)}
   ${when(d.note, () => h`<div class="note">${d.note}</div>`)}
   <pre class="body">${d.text}</pre>
   ${attachments(d)}
   <div class="actions">
     <button class="danger" hx-post="/drafts/${d.id}/discard" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.discard}</button>
-    <button hx-get="/drafts/${d.id}/edit" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.edit}</button>
+    <button hx-get="/drafts/${d.id}/edit" hx-target="#edit-sheet" hx-swap="innerHTML">${S.edit}</button>
     <button class="primary" hx-post="/drafts/${d.id}/send" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.send}</button>
   </div>
-  ${when(history.length, () => h`<details>
-    <summary>${S.thread} (${history.length})</summary>
-    ${join(history.map(messageCard))}
-  </details>`)}
 </article>`;
 }
 
@@ -329,52 +304,57 @@ export interface DraftForm {
     text: string;
 }
 
+/** The edit sheet's content; one draft is edited at a time. */
 export function draftEditor(d: Message, form: DraftForm, conflict: Message | null): View {
     const version = conflict ? conflict.version : d.version;
-    return h`<article class="card draft editing ${conflict ? "conflict" : ""}" id="draft-${d.id}" data-drop>
+    return h`<form class="${conflict ? "conflict" : ""}" hx-post="/drafts/${d.id}/save" hx-target="#edit-sheet" hx-swap="innerHTML" data-drop>
+  <div class="grabber" aria-hidden="true"></div>
   <div class="drop-hint">${S.dropFiles}</div>
-  <div class="meta"><span class="badge draft">${S.draft}</span>${mailboxBadge(d.mailbox)}</div>
+  <button type="button" class="icon-btn sheet-close" data-close aria-label="${S.close}">${icon("close")}</button>
+  <div class="sheet-head"><span class="badge draft">${S.draft}</span>${mailboxBadge(d.mailbox)}</div>
   ${when(d.note, () => h`<div class="note">${d.note}</div>`)}
-  ${when(conflict, () => h`<p class="warn">${S.conflictTitle}</p><div class="subject">${S.yourVersion}</div>`)}
-  <form hx-post="/drafts/${d.id}/save" hx-target="#draft-${d.id}" hx-swap="outerHTML">
-    <input type="hidden" name="version" value="${version}">
-    <div class="field">
-      <label for="to-${d.id}">${S.to}</label>
-      <input id="to-${d.id}" name="to" value="${form.to}" autocomplete="off" required>
-      ${when(!form.cc, () => h`<button type="button" class="link" onclick="this.remove();var r=document.getElementById('cc-row-${d.id}');r.hidden=false;r.querySelector('input').focus()">${S.cc}</button>`)}
-    </div>
-    <div class="field" id="cc-row-${d.id}" ${raw(form.cc ? "" : "hidden")}>
-      <label for="cc-${d.id}">${S.cc}</label>
-      <input id="cc-${d.id}" name="cc" value="${form.cc}" autocomplete="off">
-    </div>
-    <div class="field">
-      <label for="subject-${d.id}">${S.subject}</label>
-      <input id="subject-${d.id}" name="subject" value="${form.subject}" required>
-    </div>
-    <textarea id="text-${d.id}" name="text" aria-label="${S.body}" required>${form.text}</textarea>
-    ${draftFiles(d, null)}
-    <div class="actions">
-      <button type="button" class="link" hx-get="/drafts/${d.id}/card" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.cancel}</button>
-      <button type="submit">${S.save}</button>
-      <button type="submit" name="send" value="1" class="primary">${S.saveAndSend}</button>
-    </div>
-  </form>
-  ${when(conflict, () => h`<details open>
-    <summary>${S.currentVersion}</summary>
-    <div class="card">
+  ${when(conflict, () => h`<div class="sheet-conflict">
+    <p class="warn">${S.conflictTitle}</p>
+    <details>
+      <summary>${S.currentVersion}</summary>
       <div class="meta"><span>${S.to}: ${conflict!.to.join(", ")}</span>${when(conflict!.cc.length, () => h`<span>${S.cc}: ${conflict!.cc.join(", ")}</span>`)}</div>
       <div class="subject">${conflict!.subject}</div>
       <pre class="body">${conflict!.text}</pre>
-    </div>
-  </details>`)}
-</article>`;
+    </details>
+  </div>`)}
+  <input type="hidden" name="version" value="${version}">
+  <div class="field">
+    <label for="to-${d.id}">${S.to}</label>
+    <input id="to-${d.id}" name="to" value="${form.to}" autocomplete="off" required>
+    ${when(!form.cc, () => h`<button type="button" class="link" onclick="this.remove();var r=document.getElementById('cc-row-${d.id}');r.hidden=false;r.querySelector('input').focus()">${S.cc}</button>`)}
+  </div>
+  <div class="field" id="cc-row-${d.id}" ${raw(form.cc ? "" : "hidden")}>
+    <label for="cc-${d.id}">${S.cc}</label>
+    <input id="cc-${d.id}" name="cc" value="${form.cc}" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="subject-${d.id}">${S.subject}</label>
+    <input id="subject-${d.id}" name="subject" value="${form.subject}" required>
+  </div>
+  <textarea id="text-${d.id}" name="text" aria-label="${S.body}" required>${form.text}</textarea>
+  <div class="sheet-actions">
+    ${draftFiles(d, null)}
+    <button type="submit">${S.save}</button>
+    <button type="submit" name="send" value="1" class="primary">${S.saveAndSend}</button>
+  </div>
+</form>`;
+}
+
+/** A reply opened in the edit sheet from the reply box; the thread reloads when the sheet closes, to show the new draft. */
+export function newReplyEditor(d: Message): View {
+    return h`<div data-reload-on-close hidden></div>${draftEditor(d, { to: d.to.join(", "), cc: d.cc.join(", "), subject: d.subject, text: d.text }, null)}`;
 }
 
 /** The editor's attachment list with remove buttons, and the picker that drag and drop also feeds. */
 export function draftFiles(d: Message, error: string | null): View {
     return h`<div class="draft-files" id="files-${d.id}">
+  <label class="icon-btn" aria-label="${S.attach}">${icon("attach")}<input type="file" name="files" multiple hidden hx-post="/drafts/${d.id}/attachments" hx-encoding="multipart/form-data" hx-trigger="change" hx-target="#files-${d.id}" hx-swap="outerHTML" hx-include="this"></label>
   ${join(d.attachments.map(a => h`<span class="file"><span>${a.filename}</span><span class="size">${formatSize(a.size)}</span><button type="button" class="link" aria-label="${S.remove} ${a.filename}" hx-post="/drafts/${d.id}/attachments/${a.id}/remove" hx-target="#files-${d.id}" hx-swap="outerHTML">×</button></span>`))}
-  <label class="file attach">${S.attach}<input type="file" name="files" multiple hidden hx-post="/drafts/${d.id}/attachments" hx-encoding="multipart/form-data" hx-trigger="change" hx-target="#files-${d.id}" hx-swap="outerHTML" hx-include="this"></label>
   ${when(error, () => h`<p class="warn">${error}</p>`)}
 </div>`;
 }
@@ -383,11 +363,23 @@ export function draftDone(id: string, text: string): View {
     return h`<article class="card notice" id="draft-${id}">${text}</article>`;
 }
 
-export function draftsPage(drafts: { draft: Message; history: MessageView[]; ctx: ContextView }[]): View {
-    return h`<div class="page">
-<h1>${S.navDrafts}</h1>
-${drafts.length ? join(drafts.map(d => draftCard(d.draft, d.history, d.ctx))) : h`<p class="empty">${S.draftsEmpty}</p>`}
-</div>`;
+/** Drafts waiting for review, listed like the inbox; each opens its thread. */
+export function draftList(drafts: Message[], current: string | null): View {
+    return h`<section class="list">
+  <header class="list-head"><h1>${S.navDrafts}</h1></header>
+  ${drafts.length ? join(drafts.map(d => h`<a class="row" href="/drafts/${d.id}" ${raw(d.id === current ? 'aria-current="page"' : "")}>
+    <span class="avatar" aria-hidden="true">${initials(d.to[0] ?? d.mailbox)}</span>
+    <span class="row-main">
+      <span class="row-top"><span class="who">${d.to.map(displayName).join(", ") || "—"}</span><time datetime="${d.created_at}">${formatDate(d.created_at)}</time></span>
+      <span class="row-subject">${d.subject || "—"}</span>
+      <span class="row-snippet">${d.text}</span>
+      <span class="row-tags">
+        ${mailboxBadge(d.mailbox)}
+        <span class="row-by">${d.edited_by_human ? S.editedByHuman : S.byAgent}</span>
+      </span>
+    </span>
+  </a>`)) : h`<p class="empty">${S.draftsEmpty}</p>`}
+</section>`;
 }
 
 export interface InboxFilter {
@@ -447,7 +439,7 @@ export interface ThreadEntry {
 }
 
 /** The conversation, oldest first, with day separators, a reply box and the context panel. */
-export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextView, opts: { filter: InboxFilter; own: Set<string>; reply: { allowed: boolean; replyAll: boolean } }): View {
+export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextView, opts: { back: string; filter: InboxFilter; own: Set<string>; reply: { allowed: boolean; replyAll: boolean } }): View {
     const query = inboxQuery(opts.filter);
     const rows = contextRows(ctx);
     const people = thread.participants.filter(p => !opts.own.has(p));
@@ -462,7 +454,7 @@ export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextV
     }
     return h`<div class="thread">
   <header class="thread-head">
-    <a class="icon-btn back" href="/inbox?${query}" aria-label="${S.back}">${icon("back")}</a>
+    <a class="icon-btn back" href="${opts.back}" aria-label="${S.back}">${icon("back")}</a>
     ${rows.length
         ? h`<button type="button" class="thread-title" data-context-toggle aria-controls="context">${title}</button>`
         : h`<div class="thread-title">${title}</div>`}
@@ -472,6 +464,7 @@ export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextV
   <div class="messages" data-scroll-end>${join(items)}</div>
   ${when(opts.reply.allowed, () => h`<form class="composer" method="post" action="/threads/${thread.id}/reply?${query}">
     ${when(opts.reply.replyAll, () => h`<label class="reply-all"><input type="checkbox" name="reply_all" value="1">${S.replyAll}</label>`)}
+    <button type="button" class="icon-btn" aria-label="${S.attach}" title="${S.attach}" hx-post="/threads/${thread.id}/reply/full" hx-target="#edit-sheet" hx-swap="innerHTML">${icon("attach")}</button>
     <textarea name="text" rows="1" aria-label="${S.reply}" placeholder="${S.reply}…" required></textarea>
     <button type="submit" name="action" value="save" class="icon-btn" aria-label="${S.saveDraft}" title="${S.saveDraft}">${icon("drafts")}</button>
     <button type="submit" name="action" value="send" class="primary send" aria-label="${S.send}" title="${S.send}">${icon("send")}</button>
@@ -493,23 +486,22 @@ export function archiveButton(thread: Thread): View {
 }
 
 export function devicesPage(sessions: Session[], currentId: string): View {
-    return h`<div class="page">
-<h1>${S.navDevices}</h1>
-${sessions.length ? join(sessions.map(s => h`<article class="card" id="session-${s.id}">
-  <div class="meta">
-    <strong>${s.label ?? s.user_agent ?? S.unknownDevice}</strong>
-    ${when(s.id === currentId, () => h`<span class="badge">${S.thisDevice}</span>`)}
-    ${when(s.scope, () => join(s.scope!.map(mailboxBadge)))}
-  </div>
-  ${when(s.label && s.user_agent, () => h`<div class="meta"><span>${s.user_agent}</span></div>`)}
-  <div class="meta">
-    <span>${S.signedIn}: ${formatDate(s.created_at)}</span>
-    <span>${S.lastSeen}: ${formatDate(s.last_seen)}</span>
-    <span>${S.createdBy}: ${s.created_by}</span>
-  </div>
-  ${when(s.id !== currentId, () => h`<div class="actions"><button class="danger" hx-post="/devices/${s.id}/revoke" hx-target="#session-${s.id}" hx-swap="delete">${S.revoke}</button></div>`)}
-</article>`)) : h`<p class="empty">${S.devicesEmpty}</p>`}
-</div>`;
+    return h`<section class="list">
+  <header class="list-head"><h1>${S.navDevices}</h1></header>
+  ${sessions.length ? join(sessions.map(s => h`<div class="row device" id="session-${s.id}">
+    <span class="avatar" aria-hidden="true">${icon("devices")}</span>
+    <span class="row-main">
+      <span class="row-top"><span class="who">${s.label ?? s.user_agent ?? S.unknownDevice}</span><time datetime="${s.last_seen}">${formatDate(s.last_seen)}</time></span>
+      ${when(s.label && s.user_agent, () => h`<span class="row-subject">${s.user_agent}</span>`)}
+      <span class="row-tags">
+        ${when(s.id === currentId, () => h`<span class="badge">${S.thisDevice}</span>`)}
+        ${when(s.scope, () => join(s.scope!.map(mailboxBadge)))}
+        <span class="row-by">${S.signedIn} ${formatDate(s.created_at)} · ${S.createdBy} ${s.created_by}</span>
+      </span>
+    </span>
+    ${when(s.id !== currentId, () => h`<button class="danger" hx-post="/devices/${s.id}/revoke" hx-target="#session-${s.id}" hx-swap="delete">${S.revoke}</button>`)}
+  </div>`)) : h`<p class="empty">${S.devicesEmpty}</p>`}
+</section>`;
 }
 
 export function settingsPage(theme: Theme): View {

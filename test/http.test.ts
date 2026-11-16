@@ -297,8 +297,11 @@ describe("http", () => {
             mailbox: "support", to: ["ana@customer.test"], subject: "Hi", text: "agent v1", note: "<b>check</b>",
         });
 
-        const page = await (await req(h, "/", { cookie })).text();
+        const list = await (await req(h, "/", { cookie })).text();
+        assert.ok(list.includes(`href="/drafts/${draft.id}"`), "Drafts lists the draft");
+        const page = await (await req(h, `/drafts/${draft.id}`, { cookie })).text();
         assert.ok(page.includes("&lt;b&gt;check&lt;/b&gt;"), "note is escaped");
+        assert.ok(page.includes(`hx-target="#edit-sheet"`), "Edit opens the one edit sheet");
 
         const editor = await (await req(h, `/drafts/${draft.id}/edit`, { cookie })).text();
         assert.match(editor, new RegExp(`id="cc-row-${draft.id}" hidden`), "an empty Cc starts hidden");
@@ -325,7 +328,7 @@ describe("http", () => {
         assert.equal((await call(client, "update_draft", { id: draft.id, version: 3, text: "late", force: true })).error, true);
         await new Promise(resolve => setTimeout(resolve, 120));
         assert.equal(h.provider.sent[0]!.message.text, "human edit\n\n-- Support");
-        assert.match(await (await req(h, `/drafts/${draft.id}/undo`, { method: "POST", cookie })).text(), /Sent to ana@customer.test/);
+        assert.match(await (await req(h, `/drafts/${draft.id}/undo`, { method: "POST", cookie })).text(), /class="msg mine"[\s\S]*human edit/, "a late undo shows the sent message");
 
         const blocked = await call(client, "list_drafts");
         assert.deepEqual(blocked.data, []);
@@ -356,6 +359,17 @@ describe("http", () => {
         assert.equal(sent!.message.subject, "Re: Trial question");
         assert.ok(sent!.message.headers["In-Reply-To"], "threaded as a reply");
         assert.match(sent!.message.text, /^Sent now/);
+
+        const { data: { messages } } = await call(client, "get_thread", { thread_id: thread.id });
+        const reply = messages.at(-1);
+        const card = await (await req(h, `/drafts/${reply.id}/card`, { cookie, headers: { "hx-current-url": `${BASE}/threads/${thread.id}` } })).text();
+        assert.ok(card.includes(`class="msg mine"`), "the sent reply takes its place as a bubble");
+        assert.ok(card.includes("Sent now"));
+
+        const full = await (await req(h, `/threads/${thread.id}/reply/full`, { method: "POST", cookie, body: new URLSearchParams({ text: "Longer answer" }) })).text();
+        assert.ok(full.includes(`value="Re: Trial question"`) && full.includes(`type="file"`), "the full reply edits subject and takes files");
+        const { data: open } = await call(client, "list_drafts");
+        assert.ok(open.some((d: { text: string }) => d.text === "Longer answer"), "it starts as a draft with the typed text");
         await client.close();
     });
 
@@ -378,6 +392,28 @@ describe("http", () => {
 
         const refused = await req(h, "/compose", { method: "POST", cookie, body: new URLSearchParams({ ...form, mailbox: "catchall" }) });
         assert.equal(refused.status, 400);
+    });
+
+    test("New mail sends the files attached to it", async () => {
+        const cookie = await signIn(h);
+        const home = await (await req(h, "/", { cookie })).text();
+        assert.ok(home.includes(`enctype="multipart/form-data"`) && home.includes(`name="files"`), "the sheet takes files");
+
+        const body = new FormData();
+        for (const [k, v] of Object.entries({ mailbox: "support", to: "bob@other.test", subject: "Report", text: "Attached", action: "send" })) body.set(k, v);
+        body.append("files", new File(["a,b\n1,2\n"], "report.csv", { type: "text/csv" }));
+        assert.equal((await req(h, "/compose", { method: "POST", cookie, body })).status, 303);
+        await new Promise(resolve => setTimeout(resolve, 120));
+        const [sent] = h.provider.sent;
+        assert.deepEqual(sent!.message.attachments.map(a => [a.filename, new TextDecoder().decode(a.content)]), [["report.csv", "a,b\n1,2\n"]]);
+
+        const big = new FormData();
+        for (const [k, v] of Object.entries({ mailbox: "support", to: "bob@other.test", subject: "Big", text: "x", action: "send" })) big.set(k, v);
+        big.append("files", new File([new Uint8Array(1024 * 1024 + 1)], "big.bin"));
+        assert.equal((await req(h, "/compose", { method: "POST", cookie, body: big })).status, 400, "an oversized file stops the mail");
+        const client = await mcpClient(h);
+        assert.equal((await call(client, "list_drafts")).data.length, 0, "and creates no draft");
+        await client.close();
     });
 
     test("context set through MCP shows in get_thread and, escaped, in the UI", async () => {

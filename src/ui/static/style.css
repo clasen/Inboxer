@@ -77,7 +77,6 @@ body.full .tabbar { display: none; }
     }
     .brand { font-size: 20px; font-weight: 700; letter-spacing: -0.03em; padding: 0 12px; }
     .brand span { color: var(--accent); }
-    .sidebar .domain { font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 2px 12px 0; overflow-wrap: anywhere; }
     .new-mail { display: flex; align-items: center; justify-content: center; gap: 8px; height: 44px; border-radius: 12px; margin: 16px 0 14px; }
     .side-nav { display: flex; flex-direction: column; gap: 2px; }
     .side-nav a {
@@ -92,9 +91,11 @@ body.full .tabbar { display: none; }
 }
 
 /* Inbox: the list, and the open thread beside it on a wide screen */
-.split .pane { display: none; }
-.split.has-thread .list { display: none; }
-.split.has-thread .pane { display: block; }
+@media (max-width: 899px) {
+    .split .pane { display: none; }
+    .split.has-thread .list { display: none; }
+    .split.has-thread .pane { display: block; }
+}
 @media (min-width: 900px) {
     .split { display: flex; height: 100dvh; }
     .split .list { display: block; width: 380px; flex: none; overflow-y: auto; border-right: 1px solid var(--line); }
@@ -104,10 +105,12 @@ body.full .tabbar { display: none; }
 
 .list-head { padding: 18px 16px 12px; }
 .list-head h1 { font-size: 21px; line-height: 1.2; letter-spacing: -0.02em; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
-.chips { display: flex; gap: 8px; }
+.filters { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.chips { display: flex; flex: none; gap: 8px; }
+.filters .select { min-width: 0; }
+.filters select { width: 100%; text-overflow: ellipsis; }
 .chip {
-    display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border-radius: 999px;
+    display: inline-flex; align-items: center; height: 36px; padding: 0 12px; border-radius: 999px;
     border: 1px solid var(--line); font-size: 13px; font-weight: 500; white-space: nowrap;
 }
 .chip:hover { border-color: var(--focus); }
@@ -129,7 +132,9 @@ body.full .tabbar { display: none; }
 .row.unread .who { font-weight: 600; }
 .row.unread .row-subject { color: var(--fg); font-weight: 500; }
 .row.unread time { color: var(--accent-text); }
-.row-tags { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.row-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.row-snippet { display: block; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-by { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .list .empty { border-top: 1px solid var(--line); }
 
 /* Thread */
@@ -179,7 +184,6 @@ button.thread-title:hover { background: var(--soft); border: none; }
     align-self: flex-end; max-width: 86%; padding: 12px 14px;
     background: var(--surface); border: 1.5px dashed var(--accent); border-radius: 18px; border-bottom-right-radius: 6px;
 }
-.messages .card.editing { width: 100%; max-width: 100%; }
 .messages .card.pending, .messages .card.notice { border-style: solid; border-color: var(--line); }
 .messages .card .mailbox, .messages .draft-head .subject { display: none; }
 .messages .card .body { margin-top: 10px; }
@@ -257,10 +261,15 @@ dialog.sheet .field.compact { padding-right: 60px; }
 dialog.sheet .field output { font-family: var(--mono); font-size: .8rem; padding: 10px 0; }
 dialog.sheet textarea { flex: 1; min-height: 0; margin: 0; padding: 12px 16px; resize: none; }
 .sheet-actions {
-    display: flex; justify-content: flex-end; gap: 8px;
+    display: flex; gap: 8px;
     padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line);
 }
 .sheet-actions button { height: 44px; display: inline-flex; align-items: center; gap: 8px; }
+.sheet-actions .icon-btn { cursor: pointer; color: var(--muted); }
+.sheet-actions .icon-btn:hover { color: var(--fg); }
+.sheet-head { display: flex; align-items: center; gap: 8px; min-height: 60px; padding: 0 60px 0 16px; flex: none; }
+dialog.sheet .note { margin: 0 16px 8px; flex: none; }
+.sheet-files { flex: 1; min-width: 0; align-self: center; font-family: var(--mono); font-size: .75rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (min-width: 900px) {
     dialog.sheet { margin: auto; width: 640px; height: min(640px, 80dvh); border-radius: 18px; }
     dialog.sheet[open] { animation: none; }
@@ -275,7 +284,7 @@ dialog.sheet textarea { flex: 1; min-height: 0; margin: 0; padding: 12px 16px; r
 .meta strong { color: var(--fg); font-weight: 500; }
 .badge {
     font-family: var(--mono); font-size: .66rem; font-weight: 500; text-transform: uppercase; letter-spacing: .08em;
-    padding: 2px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--fg);
+    padding: 2px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--fg); white-space: nowrap;
 }
 .badge.draft { border-color: var(--accent); color: var(--accent-text); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; margin-left: auto; }
@@ -300,11 +309,9 @@ dialog.sheet textarea { flex: 1; min-height: 0; margin: 0; padding: 12px 16px; r
 .file:hover { border-color: var(--focus); }
 .file span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .file .size { color: var(--muted); flex: none; }
-.draft-files { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
-.draft-files .warn { flex-basis: 100%; margin: 0; color: var(--danger); font-family: var(--mono); font-size: .72rem; }
+.draft-files { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; overflow-x: auto; }
+.draft-files .warn { flex: none; margin: 0; color: var(--danger); font-family: var(--mono); font-size: .72rem; }
 .draft-files .link { font-size: 1rem; line-height: 1; }
-.attach { cursor: pointer; color: var(--muted); }
-.attach:hover { color: var(--fg); }
 [data-drop] { position: relative; }
 .drop-hint {
     display: none; position: absolute; inset: 8px 0; z-index: 1;
@@ -322,8 +329,9 @@ dialog.sheet textarea { flex: 1; min-height: 0; margin: 0; padding: 12px 16px; r
 .countdown { position: absolute; left: 0; top: -1px; height: 1px; width: 100%; background: var(--accent); transform-origin: left; animation: countdown linear forwards; }
 .messages .countdown { left: 14px; right: 14px; width: auto; top: auto; bottom: 6px; }
 @keyframes countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
-.conflict { border-top: 2px solid var(--danger); }
-.conflict .warn { color: var(--danger); font-weight: 600; margin: 14px 0 4px; }
+.sheet-conflict { padding: 0 16px 8px; max-height: 40%; overflow-y: auto; flex: none; }
+.sheet-conflict .warn { color: var(--danger); font-weight: 600; margin: 0; }
+.sheet-conflict details summary { margin-top: 8px; }
 
 details summary {
     cursor: pointer; list-style: none; margin-top: 18px;
@@ -379,12 +387,16 @@ textarea {
     display: block; width: 100%; min-height: 16rem; margin-top: 16px; padding: 0; resize: vertical;
     border: none; background: none; font: inherit; color: var(--fg); outline: none;
 }
-.messages .editing textarea { min-height: 10rem; }
 
 /* Settings */
 .setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; border-top: 1px solid var(--line); }
 .setting label { font-weight: 500; }
-.setting .danger { padding: 0; }
+.row.device:hover { background: none; }
+.row.device .avatar { color: var(--muted); }
+.row.device .danger { align-self: center; padding: 0; height: auto; border: none; background: none; }
+.row.device .danger:hover { text-decoration: underline; }
+.setting .danger, .setting .danger:hover { padding: 0; height: auto; border: none; background: none; }
+.setting .danger:hover { text-decoration: underline; }
 
 /* States */
 .centered { max-width: 360px; margin: 20vh auto 0; padding: 0 16px; text-align: center; }

@@ -2,7 +2,7 @@ import type { Context, Hono } from "hono";
 import { deleteCookie, getCookie, getSignedCookie, setCookie, setSignedCookie } from "hono/cookie";
 import type { Access } from "../auth.ts";
 import { bareAddress, domainOf, splitAddresses } from "../core/address.ts";
-import { ConflictError, InvalidRequestError, type Mail, type MessageView, type ThreadStatus } from "../core/mail.ts";
+import { ConflictError, InvalidRequestError, toView, type Mail, type MessageView, type ThreadStatus } from "../core/mail.ts";
 import { CATCHALL, type Actor, type InboxerConfig, type Message, type Session } from "../types.ts";
 import { S } from "./strings.ts";
 import * as V from "./views.ts";
@@ -23,12 +23,6 @@ function theme(c: Context): V.Theme {
 function clientInfo(c: Context) {
     const forwarded = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
     return { ip: forwarded || c.req.header("x-real-ip") || null, userAgent: c.req.header("user-agent") ?? null };
-}
-
-/** htmx sends the page URL; draft cards on a thread page leave out the thread around them. */
-function onThreadPage(c: Context): boolean {
-    const current = c.req.header("hx-current-url");
-    return !!current && new URL(current).pathname.startsWith("/threads/");
 }
 
 function uiActor(session: Session): Actor {
@@ -54,7 +48,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     const page = async (c: Context<UiEnv>, title: string, body: V.View, current: V.Page, status: 200 | 400 | 401 | 404 = 200, fullScreen = false) => {
         const session = c.get("session");
         const shell = session
-            ? { draftCount: (await mail.listDrafts(undefined, session.scope)).length, domains: domainsOf(session), senders: senders(session) }
+            ? { draftCount: (await mail.listDrafts(undefined, session.scope)).length, senders: senders(session) }
             : {};
         return c.html(V.layout(title, body, { theme: theme(c), page: current, signedIn: !!session, fullScreen, ...shell }), status);
     };
@@ -105,36 +99,36 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         });
     }
 
-    /** The sent and received messages around a draft, newest first, and the context of its thread. */
-    const draftExtras = async (draft: Message, session: Session): Promise<{ history: MessageView[]; ctx: V.ContextView }> => {
-        const { messages, context, contacts } = await mail.getThread(draft.thread_id, session.scope);
-        const history = messages.filter(m => m.id !== draft.id && m.status !== "draft").reverse().map(shown);
-        return { history, ctx: { context, contacts } };
-    };
-
-    /** The card for a draft in whatever state it is now. */
+    /** The card for a draft in whatever state it is now; once sent, its message in the thread. */
     const draftView = async (c: Context<UiEnv>, id: string): Promise<V.View> => {
-        const session = c.get("session");
-        const draft = await mail.requireMessage(id, session.scope);
+        const draft = await mail.requireMessage(id, c.get("session").scope);
         if (draft.status === "discarded") return V.draftDone(id, S.discarded);
-        if (draft.status !== "draft") return V.draftDone(id, `${S.sentTo} ${draft.to.join(", ")}`);
-        if (onThreadPage(c)) return V.draftCard(draft, [], null);
-        const { history, ctx } = await draftExtras(draft, session);
-        return V.draftCard(draft, history, ctx);
+        if (draft.status !== "draft") return V.messageBubble(shown(toView(draft)), false);
+        return V.draftCard(draft);
     };
 
     app.get("/", async c => {
+        const drafts = await mail.listDrafts(undefined, c.get("session").scope);
+        return page(c, S.navDrafts, V.inboxPage(V.draftList(drafts, null), null), "drafts");
+    });
+
+    app.get("/drafts/:id", async c => {
         const session = c.get("session");
+        const draft = await mail.requireMessage(c.req.param("id"), session.scope);
+        if (draft.status !== "draft") return c.redirect(`/threads/${draft.thread_id}?status=all`, 303);
+        const { thread, view } = await threadPane(c, draft.thread_id, "/");
         const drafts = await mail.listDrafts(undefined, session.scope);
-        const items = await Promise.all(drafts.map(async draft => ({ draft, ...(await draftExtras(draft, session)) })));
-        return page(c, S.navDrafts, V.draftsPage(items), "drafts");
+        return page(c, thread.subject || S.navDrafts, V.inboxPage(V.draftList(drafts, draft.id), view), "drafts", 200, true);
     });
 
     app.get("/drafts/:id/card", async c => c.html(await draftView(c, c.req.param("id"))));
 
     app.get("/drafts/:id/edit", async c => {
         const draft = await mail.requireMessage(c.req.param("id"), c.get("session").scope);
-        if (draft.status !== "draft" || draft.pending) return c.html(await draftView(c, draft.id));
+        if (draft.status !== "draft" || draft.pending) {
+            c.header("HX-Refresh", "true");
+            return c.body(null, 204);
+        }
         const form = { to: draft.to.join(", "), cc: draft.cc.join(", "), subject: draft.subject, text: draft.text };
         return c.html(V.draftEditor(draft, form, null));
     });
@@ -152,6 +146,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
                 text: form.text,
             }, actor);
             if (body.send === "1") await mail.schedule(id, "send", actor);
+            c.header("HX-Refresh", "true");
             return c.html(await draftView(c, id));
         } catch (err) {
             if (err instanceof ConflictError) return c.html(V.draftEditor(err.current, form, err.current));
@@ -160,20 +155,24 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         }
     });
 
+    /** Uploaded files within the size limit, and a message naming the last one over it. */
+    const uploads = (body: Record<string, unknown>): { files: File[]; error: string | null } => {
+        const all = ([] as unknown[]).concat(body.files ?? []).filter((f): f is File => f instanceof File && f.name !== "");
+        const limit = cfg.ui.maxUploadMb * 1024 * 1024;
+        const over = all.filter(f => f.size > limit).at(-1);
+        return { files: all.filter(f => f.size <= limit), error: over ? `${over.name} ${S.tooLarge} ${cfg.ui.maxUploadMb} MB` : null };
+    };
+    const attachAll = async (draftId: string, files: File[], actor: Actor) => {
+        for (const file of files) {
+            await mail.attach(draftId, { filename: file.name, contentType: file.type, body: new Uint8Array(await file.arrayBuffer()) }, actor);
+        }
+    };
+
     app.post("/drafts/:id/attachments", async c => {
         const id = c.req.param("id");
         const actor = uiActor(c.get("session"));
-        const body = await c.req.parseBody({ all: true });
-        const files = ([] as unknown[]).concat(body.files ?? []).filter((f): f is File => f instanceof File);
-        const limit = cfg.ui.maxUploadMb * 1024 * 1024;
-        let error: string | null = null;
-        for (const file of files) {
-            if (file.size > limit) {
-                error = `${file.name} ${S.tooLarge} ${cfg.ui.maxUploadMb} MB`;
-                continue;
-            }
-            await mail.attach(id, { filename: file.name, contentType: file.type, body: new Uint8Array(await file.arrayBuffer()) }, actor);
-        }
+        const { files, error } = uploads(await c.req.parseBody({ all: true }));
+        await attachAll(id, files, actor);
         return c.html(V.draftFiles(await mail.requireMessage(id, actor.scope), error));
     });
 
@@ -216,8 +215,8 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
 
     app.get("/inbox", async c => page(c, S.navInbox, V.inboxPage(await threadList(c, null), null), "inbox"));
 
-    app.get("/threads/:id", async c => {
-        const id = c.req.param("id");
+    /** A thread with its drafts in place; opening it marks it read. */
+    const threadPane = async (c: Context<UiEnv>, id: string, back: string) => {
         const session = c.get("session");
         let thread = await mail.requireThread(id, session.scope);
         if (thread.unread) {
@@ -228,14 +227,30 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const people = thread.participants.filter(p => !own.has(p));
         const entries = await Promise.all(messages.map(async m => ({
             at: m.date,
-            view: m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id), [], null) : V.messageBubble(shown(m), people.length > 1),
+            view: m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id)) : V.messageBubble(shown(m), people.length > 1),
         })));
         const reply = { allowed: senders(session).some(m => m.id === thread.mailbox), replyAll: people.length > 1 };
-        const view = V.threadView(thread, entries, { context, contacts }, { filter: inboxFilter(c), own, reply });
+        return { thread, view: V.threadView(thread, entries, { context, contacts }, { back, filter: inboxFilter(c), own, reply }) };
+    };
+
+    app.get("/threads/:id", async c => {
+        const id = c.req.param("id");
+        const { thread, view } = await threadPane(c, id, `/inbox?${V.inboxQuery(inboxFilter(c))}`);
         return page(c, thread.subject || S.navInbox, V.inboxPage(await threadList(c, id), view), "inbox", 200, true);
     });
 
     /** Replies to the latest message; a reply sent from here gets the same undo window as a draft. */
+    /** Opens a reply to the latest message in the edit sheet, for Cc, subject and attachments. */
+    app.post("/threads/:id/reply/full", async c => {
+        const actor = uiActor(c.get("session"));
+        const body = await c.req.parseBody();
+        const { messages } = await mail.getThread(c.req.param("id"), actor.scope);
+        const latest = messages.filter(m => m.status !== "draft").at(-1);
+        if (!latest) throw new InvalidRequestError("nothing to reply to");
+        const draft = await mail.createDraft({ replyToId: latest.id, replyAll: body.reply_all === "1", text: String(body.text ?? "") }, actor);
+        return c.html(V.newReplyEditor(draft));
+    });
+
     app.post("/threads/:id/reply", async c => {
         const id = c.req.param("id");
         const actor = uiActor(c.get("session"));
@@ -257,7 +272,9 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
 
     app.post("/compose", async c => {
         const actor = uiActor(c.get("session"));
-        const body = await c.req.parseBody();
+        const body = await c.req.parseBody({ all: true });
+        const { files, error } = uploads(body);
+        if (error) return page(c, S.newMail, V.message([error]), null, 400);
         try {
             const draft = await mail.createDraft({
                 mailbox: String(body.mailbox ?? ""),
@@ -266,6 +283,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
                 subject: String(body.subject ?? ""),
                 text: String(body.text ?? ""),
             }, actor);
+            await attachAll(draft.id, files, actor);
             if (body.action === "send") await mail.schedule(draft.id, "send", actor);
             return c.redirect(`/threads/${draft.thread_id}?status=all`, 303);
         } catch (err) {
