@@ -3,6 +3,8 @@ export interface MailboxConfig {
     name: string;
     signatureHtml?: string;
     signatureText?: string;
+    /** MCP tokens that only reach this mailbox, by name. */
+    tokens?: Record<string, string>;
 }
 
 export interface ProviderConfig {
@@ -25,7 +27,9 @@ export const CATCHALL = "catchall";
 
 export type Direction = "in" | "out";
 export type MessageStatus = "received" | "draft" | "sent" | "delivered" | "bounced" | "failed" | "discarded";
-export type Actor = { kind: "agent" | "ui" | "cli"; name: string };
+/** Mailbox ids an actor may reach; null reaches every mailbox, the catch-all included. */
+export type Scope = string[] | null;
+export type Actor = { kind: "agent" | "ui" | "cli"; name: string; scope: Scope };
 
 export interface AttachmentMeta {
     id: string;
@@ -110,6 +114,7 @@ export interface LoginLink {
     label: string | null;
     /** App path to open after signing in. */
     next: string | null;
+    scope: Scope;
 }
 
 export interface Session {
@@ -120,4 +125,5 @@ export interface Session {
     ip: string | null;
     label: string | null;
     created_by: string;
+    scope: Scope;
 }

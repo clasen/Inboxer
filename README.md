@@ -144,7 +144,8 @@ With roster's default isolation the site runs in its own process, so the databas
 | `threadWindowDays` | How far back a subject match may join an existing thread |
 | `mailboxes.<id>` | `address`, `name`, optional `signatureText` and `signatureHtml` |
 | `provider` | `type` plus the provider's own options (secrets go in the secret file) |
-| `mcp.tokens.<name>` | Bearer tokens for MCP; the name is recorded as the actor in the audit log |
+| `mcp.tokens.<name>` | Bearer tokens for MCP that reach every mailbox; the name is recorded as the actor in the audit log |
+| `mailboxes.<id>.tokens.<name>` | Bearer tokens that reach only that mailbox |
 | `ui.cookieSecret` | Signs the UI session cookie |
 | `ui.loginLinkTtlMin` | Minutes before an unused login link expires |
 
@@ -230,6 +231,22 @@ module.exports = {
 
 Restart Inboxer to load it. To revoke a token, delete its entry and restart.
 
+### Mailbox tokens
+
+A token under `mcp.tokens` reaches every mailbox and the catch-all. To give a team or a job access to one mailbox only, put its token under that mailbox instead:
+
+```javascript
+module.exports = {
+    mcp: { tokens: { "admin": "3f9c..." } },                       // every mailbox
+    mailboxes: {
+        feedback: { tokens: { "feedback-bot": "a71e..." } },        // only feedback
+        legal: { tokens: { "legal-team": "c2d4..." } }              // only legal
+    }
+};
+```
+
+A mailbox token sees nothing else: other mailboxes' threads, messages and drafts read as not found, and it cannot send from them. Contacts are shared by address, but it reaches only the contacts that take part in its own threads. A login link it creates signs a browser into the same mailboxes, and it lists and revokes only those browsers. To reach several mailboxes, put the same name and token under each. A name always maps to one token, and a token to one name.
+
 With Claude Code:
 
 ```bash
@@ -302,7 +319,7 @@ The theme follows the system setting, with a System / Light / Dark switch stored
 3. The button's POST consumes the link and creates a session. Any later attempt sees "This link was already used or expired."
 4. The session cookie is `HttpOnly`, `Secure`, `SameSite=Lax` and signed. Sessions do not expire; the cookie is re-issued on every visit so browsers keep it. A session ends on logout or revocation.
 
-Each link creates one independent session. Revoking a phone does not sign out a laptop.
+Each link creates one independent session. Revoking a phone does not sign out a laptop. A session reaches the mailboxes of the token that created its link; **Devices** shows them on each session that is limited.
 
 If you have no MCP client at hand, mint a link on the server:
 

@@ -240,6 +240,7 @@ ${sessions.length ? join(sessions.map(s => h`<article class="card" id="session-$
   <div class="meta">
     <strong>${s.label ?? s.user_agent ?? S.unknownDevice}</strong>
     ${when(s.id === currentId, () => h`<span class="badge">${S.thisDevice}</span>`)}
+    ${when(s.scope, () => join(s.scope!.map(mailboxBadge)))}
   </div>
   ${when(s.label && s.user_agent, () => h`<div class="meta"><span>${s.user_agent}</span></div>`)}
   <div class="meta">

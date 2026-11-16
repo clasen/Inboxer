@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { matchBearer, type Access } from "./auth.ts";
+import { mcpTokens } from "./config.ts";
 import { InvalidRequestError, type Mail } from "./core/mail.ts";
 import { handleMcp } from "./mcp.ts";
 import { WebhookSignatureError } from "./provider/types.ts";
@@ -10,6 +11,7 @@ import { registerUi, type UiEnv } from "./ui/routes.ts";
 
 export function buildApp(mail: Mail, access: Access, cfg: InboxerConfig, ready: Promise<void>): Hono<UiEnv> {
     const app = new Hono<UiEnv>();
+    const tokens = mcpTokens(cfg);
 
     app.use("*", async (_c, next) => {
         await ready;
@@ -44,9 +46,9 @@ export function buildApp(mail: Mail, access: Access, cfg: InboxerConfig, ready: 
     });
 
     app.all("/mcp", async c => {
-        const name = matchBearer(c.req.header("authorization"), cfg.mcp.tokens);
-        if (!name) return c.text("Unauthorized", 401, { "WWW-Authenticate": "Bearer" });
-        return handleMcp(c.req.raw, mail, access, { kind: "agent", name });
+        const token = matchBearer(c.req.header("authorization"), tokens);
+        if (!token) return c.text("Unauthorized", 401, { "WWW-Authenticate": "Bearer" });
+        return handleMcp(c.req.raw, mail, access, { kind: "agent", name: token.name, scope: token.scope });
     });
 
     registerUi(app, mail, access, cfg);

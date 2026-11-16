@@ -36,7 +36,8 @@ module.exports = {
 ```javascript
 module.exports = {
     provider: { apiKey: "re_...", webhookSecret: "whsec_..." },
-    mcp: { tokens: { "support-schedule": "<openssl rand -hex 32>" } },
+    mcp: { tokens: { "admin": "<openssl rand -hex 32>" } },                        // every mailbox
+    mailboxes: { support: { tokens: { "support-schedule": "<openssl rand -hex 32>" } } },  // support only
     ui: { cookieSecret: "<openssl rand -hex 32>" }
 };
 ```
@@ -83,6 +84,8 @@ Implement `MailProvider` (exported types) and pass it as `createInboxer(cfg, { p
 ## Connect an MCP client
 
 One token per client, so the audit log names the actor and revoking one leaves the rest. Revoke by deleting the entry and restarting.
+
+Tokens in `mcp.tokens` reach every mailbox. A token under `mailboxes.<id>.tokens` (secret file) reaches only that mailbox: everything else reads as not found, it reaches only contacts in its own threads, and its login links sign browsers into the same mailboxes. Repeat the same name and token under several mailboxes to reach all of them.
 
 ```bash
 claude mcp add --transport http inboxer https://inboxer.example.com/mcp --header "Authorization: Bearer <token>"

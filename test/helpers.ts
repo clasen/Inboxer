@@ -76,6 +76,7 @@ export class FakeProvider implements MailProvider {
 }
 
 export const TOKEN = "test-token-0123456789";
+export const FEEDBACK_TOKEN = "feedback-token-0123456789";
 
 export function testConfig(dataDir: string): InboxerConfig {
     return {
@@ -85,7 +86,7 @@ export function testConfig(dataDir: string): InboxerConfig {
         threadWindowDays: 30,
         mailboxes: {
             support: { address: "support@inboxer.test", name: "Inboxer Support", signatureText: "-- Support", signatureHtml: "<p>-- Support</p>" },
-            feedback: { address: "feedback@inboxer.test", name: "Inboxer" },
+            feedback: { address: "feedback@inboxer.test", name: "Inboxer", tokens: { "feedback-bot": FEEDBACK_TOKEN } },
         },
         provider: { type: "fake" },
         mcp: { tokens: { agent: TOKEN } },

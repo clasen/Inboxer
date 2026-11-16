@@ -1,5 +1,5 @@
 import { isAbsolute } from "node:path";
-import { CATCHALL, type InboxerConfig } from "./types.ts";
+import { CATCHALL, type InboxerConfig, type Scope } from "./types.ts";
 
 /** Absolute URL of an app path under `publicUrl`. */
 export function appUrl(cfg: Pick<InboxerConfig, "publicUrl">, path: string): string {
@@ -36,11 +36,54 @@ export function assertConfig(cfg: InboxerConfig, { requireProvider }: { requireP
     for (const [id, mailbox] of Object.entries(cfg.mailboxes)) {
         requireString(mailbox.address, `mailboxes.${id}.address`);
         requireString(mailbox.name, `mailboxes.${id}.name`);
+        if (mailbox.tokens !== undefined && (!mailbox.tokens || typeof mailbox.tokens !== "object")) fail(`mailboxes.${id}.tokens`, "an object of named tokens");
     }
 
     if (requireProvider) requireString(cfg.provider?.type, "provider.type");
     if (!cfg.mcp?.tokens || typeof cfg.mcp.tokens !== "object") fail("mcp.tokens", "an object of named tokens");
     for (const [name, token] of Object.entries(cfg.mcp.tokens)) requireString(token, `mcp.tokens.${name}`);
+    mcpTokens(cfg);
     requireString(cfg.ui?.cookieSecret, "ui.cookieSecret");
     requirePositive(cfg.ui?.loginLinkTtlMin, "ui.loginLinkTtlMin");
+}
+
+export interface McpToken {
+    name: string;
+    token: string;
+    scope: Scope;
+}
+
+/**
+ * Tokens in `mcp.tokens` reach every mailbox; tokens under `mailboxes.<id>.tokens` reach only that
+ * mailbox. The same name and token under several mailboxes reach all of them.
+ */
+export function mcpTokens(cfg: InboxerConfig): McpToken[] {
+    const byName = new Map<string, McpToken>();
+    const add = (name: string, token: unknown, mailbox: string | null, path: string) => {
+        requireString(token, path);
+        const known = byName.get(name);
+        if (known && known.token !== token) fail(path, `the same token as every other entry named "${name}"`);
+        for (const other of byName.values()) {
+            if (other.name !== name && other.token === token) fail(path, `a token not already used by "${other.name}"`);
+        }
+        const entry = known ?? { name, token: token as string, scope: [] };
+        if (mailbox === null) entry.scope = null;
+        else if (entry.scope && !entry.scope.includes(mailbox)) entry.scope.push(mailbox);
+        byName.set(name, entry);
+    };
+    for (const [name, token] of Object.entries(cfg.mcp.tokens)) add(name, token, null, `mcp.tokens.${name}`);
+    for (const [id, mailbox] of Object.entries(cfg.mailboxes)) {
+        for (const [name, token] of Object.entries(mailbox.tokens ?? {})) add(name, token, id, `mailboxes.${id}.tokens.${name}`);
+    }
+    return [...byName.values()];
+}
+
+/** Whether `scope` reaches `mailbox`. */
+export function reaches(scope: Scope, mailbox: string): boolean {
+    return scope === null || scope.includes(mailbox);
+}
+
+/** Whether `outer` reaches every mailbox `inner` does. */
+export function covers(outer: Scope, inner: Scope): boolean {
+    return outer === null || (inner !== null && inner.every(m => outer.includes(m)));
 }

@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { ConflictError, InvalidRequestError } from "../src/core/mail.ts";
+import { assertConfig, mcpTokens } from "../src/config.ts";
+import { NotFoundError } from "../src/store.ts";
 import { CATCHALL } from "../src/types.ts";
-import { startCore, type CoreHarness } from "./helpers.ts";
+import { startCore, testConfig, type CoreHarness } from "./helpers.ts";
 
-const agent = { kind: "agent", name: "schedule" } as const;
-const human = { kind: "ui", name: "phone" } as const;
+const agent = { kind: "agent", name: "schedule", scope: null } as const;
+const human = { kind: "ui", name: "phone", scope: null } as const;
+const feedbackBot = { kind: "agent", name: "feedback-bot", scope: ["feedback"] };
 
 describe("mail core", () => {
     let h: CoreHarness;
@@ -54,14 +57,14 @@ describe("mail core", () => {
     test("unanswered threads: last message inbound and no pending draft", async () => {
         h.provider.addInbound({ providerId: "q" });
         const id = await h.mail.ingest("q");
-        assert.equal((await h.mail.listThreads({ status: "unanswered" })).length, 1);
+        assert.equal((await h.mail.listThreads({ status: "unanswered" }, null)).length, 1);
         const draft = await h.mail.createDraft({ replyToId: id, text: "7 days.", note: "check the license first" }, agent);
-        assert.equal((await h.mail.listThreads({ status: "unanswered" })).length, 0);
+        assert.equal((await h.mail.listThreads({ status: "unanswered" }, null)).length, 0);
         await h.mail.discardDraft(draft.id, agent);
-        assert.equal((await h.mail.listThreads({ status: "unanswered" })).length, 1);
+        assert.equal((await h.mail.listThreads({ status: "unanswered" }, null)).length, 1);
         await h.mail.reply(id, "7 days.", false, agent);
-        assert.equal((await h.mail.listThreads({ status: "unanswered" })).length, 0);
-        assert.equal((await h.mail.listThreads({ status: "all" })).length, 1);
+        assert.equal((await h.mail.listThreads({ status: "unanswered" }, null)).length, 0);
+        assert.equal((await h.mail.listThreads({ status: "all" }, null)).length, 1);
     });
 
     test("a reply draft derives recipients, subject and threading headers", async () => {
@@ -109,7 +112,7 @@ describe("mail core", () => {
         assert.match(call!.message.text, /Body\n\n-- Support$/);
         assert.match(call!.message.html, /<p>Body<\/p>\n<p>-- Support<\/p>/);
         await assert.rejects(h.mail.sendDraft(draft.id, agent), InvalidRequestError);
-        assert.deepEqual(await h.mail.listDrafts(), []);
+        assert.deepEqual(await h.mail.listDrafts(undefined, null), []);
     });
 
     test("a reply to our sent message threads back through the Message-ID index", async () => {
@@ -139,9 +142,9 @@ describe("mail core", () => {
         h.provider.addInbound({ providerId: "b", to: ["feedback@inboxer.test"], subject: "Licencia", text: "otra" });
         await h.mail.ingest("a");
         await h.mail.ingest("b");
-        assert.equal((await h.mail.search({ query: "LICENCIA cancion" })).length, 1);
-        assert.equal((await h.mail.search({ query: "licencia" })).length, 2);
-        assert.equal((await h.mail.search({ query: "licencia", mailbox: "feedback" })).length, 1);
+        assert.equal((await h.mail.search({ query: "LICENCIA cancion" }, null)).length, 1);
+        assert.equal((await h.mail.search({ query: "licencia" }, null)).length, 2);
+        assert.equal((await h.mail.search({ query: "licencia", mailbox: "feedback" }, null)).length, 1);
     });
 
     test("labels and archive apply to whole threads; a new inbound message unarchives", async () => {
@@ -150,7 +153,7 @@ describe("mail core", () => {
         const threadId = (await h.store.requireMessage(id)).thread_id;
         await h.mail.label([threadId], ["trial"], [], agent);
         await h.mail.mark([threadId], { archived: true, read: true }, agent);
-        assert.equal((await h.mail.listThreads({ status: "archived", label: "trial" })).length, 1);
+        assert.equal((await h.mail.listThreads({ status: "archived", label: "trial" }, null)).length, 1);
         h.provider.addInbound({ providerId: "b", inReplyTo: "<a@c.test>" });
         await h.mail.ingest("b");
         const thread = await h.store.requireThread(threadId);
@@ -178,12 +181,12 @@ describe("mail core", () => {
         await h.mail.setContact("ana@customer.test", { meta: { crm_id: 991 } }, agent);
         await h.mail.setThreadContext(bobThread, { meta: { ticket: "45" } }, agent);
 
-        assert.deepEqual((await h.mail.listThreads({ status: "all", meta: { crm_id: "991" } })).map(t => t.id), [anaThread]);
-        assert.deepEqual((await h.mail.listThreads({ status: "all", meta: { ticket: 45 } })).map(t => t.id), [bobThread]);
-        assert.deepEqual(await h.mail.listThreads({ status: "all", meta: { crm_id: 1 } }), []);
-        assert.equal((await h.mail.search({ meta: { crm_id: 991 } }))[0]!.thread_id, anaThread);
-        assert.equal((await h.mail.search({ query: "invoice", meta: { crm_id: 991 } })).length, 0);
-        await assert.rejects(h.mail.search({}), InvalidRequestError);
+        assert.deepEqual((await h.mail.listThreads({ status: "all", meta: { crm_id: "991" } }, null)).map(t => t.id), [anaThread]);
+        assert.deepEqual((await h.mail.listThreads({ status: "all", meta: { ticket: 45 } }, null)).map(t => t.id), [bobThread]);
+        assert.deepEqual(await h.mail.listThreads({ status: "all", meta: { crm_id: 1 } }, null), []);
+        assert.equal((await h.mail.search({ meta: { crm_id: 991 } }, null))[0]!.thread_id, anaThread);
+        assert.equal((await h.mail.search({ query: "invoice", meta: { crm_id: 991 } }, null)).length, 0);
+        await assert.rejects(h.mail.search({}, null), InvalidRequestError);
     });
 
     test("getThread returns the thread context and external contacts, which survive new messages", async () => {
@@ -195,10 +198,50 @@ describe("mail core", () => {
         h.provider.addInbound({ providerId: "b", inReplyTo: "<a@c.test>", from: "ana@customer.test" });
         await h.mail.ingest("b");
 
-        const { context, contacts, messages } = await h.mail.getThread(threadId);
+        const { context, contacts, messages } = await h.mail.getThread(threadId, null);
         assert.equal(messages.length, 2);
         assert.equal(context?.note, "promised an answer on Monday");
         assert.deepEqual(contacts.map(c => c.address), ["ana@customer.test"]);
         await assert.rejects(h.mail.setThreadContext("missing", { note: "x" }, agent));
+    });
+
+    test("a scoped actor only reaches its mailboxes; the rest reads as missing", async () => {
+        h.provider.addInbound({ providerId: "s", from: "ana@customer.test", subject: "Support question" });
+        h.provider.addInbound({ providerId: "f", from: "bob@other.test", to: ["feedback@inboxer.test"], subject: "Feedback idea" });
+        const support = await h.store.requireMessage(await h.mail.ingest("s"));
+        const feedback = await h.store.requireMessage(await h.mail.ingest("f"));
+        const scope = feedbackBot.scope;
+
+        assert.deepEqual(h.mail.listMailboxes(scope).map(m => m.id), ["feedback"]);
+        assert.ok(h.mail.listMailboxes(null).some(m => m.id === CATCHALL));
+        assert.deepEqual((await h.mail.listThreads({ status: "all" }, scope)).map(t => t.id), [feedback.thread_id]);
+        assert.deepEqual(await h.mail.listThreads({ status: "all", mailbox: "support" }, scope), []);
+        assert.equal((await h.mail.search({ query: "question" }, scope)).length, 0);
+        await assert.rejects(h.mail.getThread(support.thread_id, scope), NotFoundError);
+        await assert.rejects(h.mail.label([support.thread_id], ["x"], [], feedbackBot), NotFoundError);
+        await assert.rejects(h.mail.createDraft({ replyToId: support.id, text: "hi" }, feedbackBot), NotFoundError);
+        await assert.rejects(h.mail.createDraft({ mailbox: "support", to: ["x@y.test"], subject: "s", text: "t" }, feedbackBot), /not available/);
+        await assert.rejects(h.mail.setThreadContext(support.thread_id, { note: "x" }, feedbackBot), NotFoundError);
+
+        const draft = await h.mail.createDraft({ replyToId: feedback.id, text: "Thanks" }, feedbackBot);
+        assert.deepEqual((await h.mail.listDrafts(undefined, scope)).map(d => d.id), [draft.id]);
+        await h.mail.createDraft({ replyToId: support.id, text: "Hi" }, agent);
+        assert.equal((await h.mail.listDrafts(undefined, scope)).length, 1);
+
+        await h.mail.setContact("bob@other.test", { meta: { crm_id: 7 } }, feedbackBot);
+        await assert.rejects(h.mail.setContact("ana@customer.test", { note: "x" }, feedbackBot), NotFoundError);
+        await assert.rejects(h.mail.getContact("ana@customer.test", scope), NotFoundError);
+        assert.equal((await h.mail.getContact("bob@other.test", null))?.meta.crm_id, 7);
+    });
+
+    test("a token keeps one name, and the same name under several mailboxes reaches all of them", () => {
+        const cfg = testConfig("/tmp/x");
+        cfg.mailboxes.support!.tokens = { "feedback-bot": "other-token" };
+        assert.throws(() => assertConfig(cfg, { requireProvider: true }), /feedback-bot/);
+        cfg.mailboxes.support!.tokens = { renamed: cfg.mailboxes.feedback!.tokens!["feedback-bot"]! };
+        assert.throws(() => assertConfig(cfg, { requireProvider: true }), /already used/);
+        cfg.mailboxes.support!.tokens = { "feedback-bot": cfg.mailboxes.feedback!.tokens!["feedback-bot"]! };
+        assert.deepEqual(mcpTokens(cfg).find(t => t.name === "feedback-bot")?.scope, ["support", "feedback"]);
+        assert.equal(mcpTokens(cfg).find(t => t.name === "agent")?.scope, null);
     });
 });

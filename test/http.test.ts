@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { startHarness, TOKEN, webhook, type Harness } from "./helpers.ts";
+import { FEEDBACK_TOKEN, startHarness, TOKEN, webhook, type Harness } from "./helpers.ts";
 
 const BASE = "http://localhost";
 const NativeResponse = globalThis.Response;
@@ -165,6 +165,38 @@ describe("http", () => {
         await call(client, "revoke_session", { id: remaining[0].id });
         assert.equal((await req(h, "/", { cookie: laptop })).status, 401);
         await client.close();
+    });
+
+    test("a mailbox token sees only its mailbox, and so do the browsers it signs in", async () => {
+        h.provider.addInbound({ providerId: "s", subject: "Support question" });
+        h.provider.addInbound({ providerId: "f", from: "bob@other.test", to: ["feedback@inboxer.test"], subject: "Feedback idea" });
+        await webhook(h, [{ type: "received", providerId: "s" }, { type: "received", providerId: "f" }]);
+        const admin = await mcpClient(h);
+        const bot = await mcpClient(h, FEEDBACK_TOKEN);
+
+        const { data: mailboxes } = await call(bot, "list_mailboxes");
+        assert.deepEqual(mailboxes.map((m: { id: string }) => m.id), ["feedback"]);
+        const { data: threads } = await call(bot, "list_threads", { status: "all" });
+        assert.deepEqual(threads.map((t: { subject: string }) => t.subject), ["Feedback idea"]);
+        const support = (await call(admin, "list_threads", { mailbox: "support" })).data[0];
+        assert.match((await call(bot, "get_thread", { thread_id: support.id })).data.error, /not found/);
+        assert.equal((await call(bot, "create_login_link", { thread_id: support.id })).error, true);
+
+        await signIn(h);
+        const { data: link } = await call(bot, "create_login_link", { label: "feedback phone" });
+        const cookie = sessionCookie(await req(h, new URL(link.url).pathname, { method: "POST" }));
+        const inbox = await (await req(h, "/inbox?status=all", { cookie })).text();
+        assert.ok(inbox.includes("Feedback idea"));
+        assert.ok(!inbox.includes("Support question"));
+        assert.equal((await req(h, `/threads/${support.id}`, { cookie })).status, 404);
+
+        const { data: botSessions } = await call(bot, "list_sessions");
+        assert.deepEqual(botSessions.map((s: { label: string }) => s.label), ["feedback phone"]);
+        assert.equal((await call(admin, "list_sessions")).data.length, 2);
+        const laptop = (await call(admin, "list_sessions")).data.find((s: { label: string }) => s.label === "laptop");
+        assert.equal((await call(bot, "revoke_session", { id: laptop.id })).data.revoked, false);
+        await admin.close();
+        await bot.close();
     });
 
     test("editing a draft in the UI detects agent changes and never overwrites silently", async () => {

@@ -17,7 +17,7 @@ assertConfig(cfg, { requireProvider: false });
 const store = new Store(cfg.dataDir);
 await store.connect();
 try {
-    const link = await new Access(store, cfg).createLoginLink({ kind: "cli", name: "cli" }, label ?? null);
+    const link = await new Access(store, cfg).createLoginLink({ kind: "cli", name: "cli", scope: null }, label ?? null);
     console.log(link.url);
 } finally {
     await store.close();

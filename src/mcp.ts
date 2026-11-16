@@ -51,8 +51,8 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     const server = new McpServer({ name: "inboxer", version: VERSION });
     const cfg = mail.cfg;
 
-    server.registerTool("list_mailboxes", { description: "Configured mailboxes, plus the catch-all for unknown recipients." },
-        wrap(cfg, async () => mail.listMailboxes()));
+    server.registerTool("list_mailboxes", { description: "Mailboxes this token reaches; tokens for every mailbox also see the catch-all for unknown recipients." },
+        wrap(cfg, async () => mail.listMailboxes(actor.scope)));
 
     server.registerTool("list_threads", {
         description: "Threads, newest first. status: unanswered (last message inbound and no pending draft), all (not archived), archived.",
@@ -64,7 +64,7 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
             meta: metaFilter.optional(),
             limit: z.number().int().positive().optional().describe("Default: 50"),
         },
-    }, wrap(cfg, async args => (await mail.listThreads(args)).map(t => threadView(cfg, t))));
+    }, wrap(cfg, async args => (await mail.listThreads(args, actor.scope)).map(t => threadView(cfg, t))));
 
     server.registerTool("search", {
         description: "Full-text search over subject, body, from and to. Accent and case insensitive; every term must match. Pass query, meta, or both.",
@@ -77,20 +77,20 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
             until: isoDate.optional(),
             limit: z.number().int().positive().optional().describe("Default: 50"),
         },
-    }, wrap(cfg, async args => (await mail.search(args)).map(m => messageView(cfg, m))));
+    }, wrap(cfg, async args => (await mail.search(args, actor.scope)).map(m => messageView(cfg, m))));
 
     server.registerTool("get_thread", {
         description: "A thread with its messages as plain text, pending drafts included, plus the thread's context and the contacts of its participants.",
         inputSchema: { thread_id: z.string() },
     }, wrap(cfg, async ({ thread_id }) => {
-        const { thread, messages, ...context } = await mail.getThread(thread_id);
+        const { thread, messages, ...context } = await mail.getThread(thread_id, actor.scope);
         return { thread: threadView(cfg, thread), ...context, messages: messages.map(m => messageView(cfg, m)) };
     }));
 
     server.registerTool("get_contact", {
         description: "Context stored for an email address: meta (e.g. ids in other systems) and a note. null when there is none.",
         inputSchema: { address: z.string() },
-    }, wrap(cfg, async ({ address }) => mail.getContact(address)));
+    }, wrap(cfg, async ({ address }) => mail.getContact(address, actor.scope)));
 
     server.registerTool("set_contact", {
         description: "Attach context to an email address, e.g. meta { license_id: \"BL-2231\" } or a note. Merges with what is stored. Shown in get_thread and in the review UI, and searchable with meta filters.",
@@ -150,7 +150,7 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     server.registerTool("list_drafts", {
         description: "Pending drafts, newest first.",
         inputSchema: { mailbox: z.string().optional() },
-    }, wrap(cfg, async ({ mailbox }) => (await mail.listDrafts(mailbox)).map(d => draftView(cfg, d))));
+    }, wrap(cfg, async ({ mailbox }) => (await mail.listDrafts(mailbox, actor.scope)).map(d => draftView(cfg, d))));
 
     server.registerTool("discard_draft", { description: "Discard a pending draft.", inputSchema: { id: z.string() } },
         wrap(cfg, async ({ id }) => { await mail.discardDraft(id, actor); return { discarded: id }; }));
@@ -179,10 +179,10 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     server.registerTool("get_attachment", {
         description: "Temporary download URL for an inbound attachment.",
         inputSchema: { message_id: z.string(), attachment_id: z.string() },
-    }, wrap(cfg, async ({ message_id, attachment_id }) => ({ url: await mail.getAttachmentUrl(message_id, attachment_id) })));
+    }, wrap(cfg, async ({ message_id, attachment_id }) => ({ url: await mail.getAttachmentUrl(message_id, attachment_id, actor.scope) })));
 
     server.registerTool("create_login_link", {
-        description: "One-time link that signs one browser into the review UI. Expires unused after a few minutes. Pass thread_id to land on that thread after signing in. Browsers already signed in can open a result's url directly.",
+        description: "One-time link that signs one browser into the review UI, limited to the mailboxes this token reaches. Expires unused after a few minutes. Pass thread_id to land on that thread after signing in. Browsers already signed in can open a result's url directly.",
         inputSchema: {
             label: z.string().optional().describe("Shown in the device list, e.g. \"Martin's phone\""),
             thread_id: z.string().optional().describe("Thread to open after signing in"),
@@ -190,7 +190,7 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     }, wrap(cfg, async ({ label, thread_id }) => access.createLoginLink(actor, label ?? null, thread_id ?? null)));
 
     server.registerTool("list_sessions", { description: "Browsers signed into the UI." },
-        wrap(cfg, async () => access.listSessions()));
+        wrap(cfg, async () => access.listSessions(actor.scope)));
 
     server.registerTool("revoke_session", { description: "Sign a browser out of the UI.", inputSchema: { id: z.string() } },
         wrap(cfg, async ({ id }) => ({ revoked: await access.revokeSession(id, actor) })));

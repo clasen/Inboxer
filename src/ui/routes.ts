@@ -26,7 +26,7 @@ function clientInfo(c: Context) {
 }
 
 function uiActor(session: Session): Actor {
-    return { kind: "ui", name: session.label ?? session.id.slice(0, 12) };
+    return { kind: "ui", name: session.label ?? session.id.slice(0, 12), scope: session.scope };
 }
 
 export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: InboxerConfig): void {
@@ -34,9 +34,9 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     const cookieOptions = { httpOnly: true, secure: true, sameSite: "Lax", path: "/", maxAge: COOKIE_MAX_AGE } as const;
 
     const page = async (c: Context<UiEnv>, title: string, body: V.View, current: V.Page, status: 200 | 401 | 404 = 200) => {
-        const signedIn = !!c.get("session");
-        const draftCount = signedIn ? (await mail.store.draftIds()).length : 0;
-        return c.html(V.layout(title, body, { theme: theme(c), page: current, draftCount, signedIn }), status);
+        const session = c.get("session");
+        const draftCount = session ? (await mail.listDrafts(undefined, session.scope)).length : 0;
+        return c.html(V.layout(title, body, { theme: theme(c), page: current, draftCount, signedIn: !!session }), status);
     };
 
     // Sign-in: GET only shows a button, so link previews and scanners do not burn the link.
@@ -78,26 +78,27 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     }
 
     /** The sent and received messages around a draft, and the context of its thread. */
-    const draftExtras = async (draft: Message): Promise<{ history: MessageView[]; ctx: V.ContextView }> => {
-        const { messages, context, contacts } = await mail.getThread(draft.thread_id);
+    const draftExtras = async (draft: Message, session: Session): Promise<{ history: MessageView[]; ctx: V.ContextView }> => {
+        const { messages, context, contacts } = await mail.getThread(draft.thread_id, session.scope);
         return { history: messages.filter(m => m.id !== draft.id && m.status !== "draft"), ctx: { context, contacts } };
     };
 
     app.get("/", async c => {
-        const drafts = await mail.listDrafts();
-        const items = await Promise.all(drafts.map(async draft => ({ draft, ...(await draftExtras(draft)) })));
+        const session = c.get("session");
+        const drafts = await mail.listDrafts(undefined, session.scope);
+        const items = await Promise.all(drafts.map(async draft => ({ draft, ...(await draftExtras(draft, session)) })));
         return page(c, S.navDrafts, V.draftsPage(items), "drafts");
     });
 
     app.get("/drafts/:id/card", async c => {
-        const draft = await mail.store.requireMessage(c.req.param("id"));
+        const draft = await mail.requireMessage(c.req.param("id"), c.get("session").scope);
         if (draft.status !== "draft") return c.html(V.draftDone(draft.id, `${S.status}: ${draft.status}`));
-        const { history, ctx } = await draftExtras(draft);
+        const { history, ctx } = await draftExtras(draft, c.get("session"));
         return c.html(V.draftCard(draft, history, ctx));
     });
 
     app.get("/drafts/:id/edit", async c => {
-        const draft = await mail.store.requireMessage(c.req.param("id"));
+        const draft = await mail.requireMessage(c.req.param("id"), c.get("session").scope);
         if (draft.status !== "draft") return c.html(V.draftDone(draft.id, `${S.status}: ${draft.status}`));
         const form = { to: draft.to.join(", "), cc: draft.cc.join(", "), subject: draft.subject, text: draft.text };
         return c.html(V.draftEditor(draft, form, null));
@@ -119,8 +120,8 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
                 const sent = await mail.sendDraft(id, actor);
                 return c.html(V.draftDone(id, `${S.sentTo} ${sent.to.join(", ")}`));
             }
-            const draft = await mail.store.requireMessage(id);
-            const { history, ctx } = await draftExtras(draft);
+            const draft = await mail.requireMessage(id, actor.scope);
+            const { history, ctx } = await draftExtras(draft, c.get("session"));
             return c.html(V.draftCard(draft, history, ctx));
         } catch (err) {
             if (err instanceof ConflictError) return c.html(V.draftEditor(err.current, form, err.current));
@@ -155,20 +156,22 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const mailbox = c.req.query("mailbox") ?? "";
         const requested = c.req.query("status");
         const status = requested === "all" || requested === "archived" ? requested : "unanswered";
-        const threads = await mail.listThreads({ mailbox: mailbox || undefined, status, limit: 200 });
-        const mailboxes = mail.listMailboxes();
+        const scope = c.get("session").scope;
+        const threads = await mail.listThreads({ mailbox: mailbox || undefined, status, limit: 200 }, scope);
+        const mailboxes = mail.listMailboxes(scope);
         const own = new Set(mailboxes.map(m => bareAddress(m.address)));
         return page(c, S.navInbox, V.inboxPage(threads, mailboxes.map(m => m.id), { mailbox, status }, own), "inbox");
     });
 
     app.get("/threads/:id", async c => {
         const id = c.req.param("id");
-        let thread = await mail.store.requireThread(id);
+        const scope = c.get("session").scope;
+        let thread = await mail.requireThread(id, scope);
         if (thread.unread) {
             await mail.mark([id], { read: true }, uiActor(c.get("session")));
-            thread = await mail.store.requireThread(id);
+            thread = await mail.requireThread(id, scope);
         }
-        const { messages, context, contacts } = await mail.getThread(id);
+        const { messages, context, contacts } = await mail.getThread(id, scope);
         const items = await Promise.all(messages.map(async m =>
             m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id), [], null) : V.messageCard(m)));
         return page(c, thread.subject || S.navInbox, V.threadPage(thread, items, { context, contacts }), "inbox");
@@ -183,7 +186,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
 
     app.get("/devices", async c => {
         const session = c.get("session");
-        return page(c, S.navDevices, V.devicesPage(await access.listSessions(), session.id), "devices");
+        return page(c, S.navDevices, V.devicesPage(await access.listSessions(session.scope), session.id), "devices");
     });
 
     app.post("/devices/:id/revoke", async c => {

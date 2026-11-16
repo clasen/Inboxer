@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { DeliveryStatus, MailProvider, ProviderEvent } from "../provider/types.ts";
-import { nid, type Store } from "../store.ts";
-import { CATCHALL, type Actor, type Contact, type Context, type InboxerConfig, type MailboxConfig, type Message, type MetaValue, type Thread } from "../types.ts";
+import { reaches } from "../config.ts";
+import { NotFoundError, nid, type Store } from "../store.ts";
+import { CATCHALL, type Actor, type Contact, type Context, type InboxerConfig, type MailboxConfig, type Message, type MetaValue, type Scope, type Thread } from "../types.ts";
 import { bareAddress, domainOf, formatAddress } from "./address.ts";
 import { mergeContext, metaMatches, type ContextPatch } from "./context.ts";
 import { htmlToText, replySubject, textToHtml, tokenize } from "./text.ts";
@@ -104,11 +105,34 @@ export class Mail {
         this.ownAddresses = new Set(Object.values(cfg.mailboxes).map(m => bareAddress(m.address)));
     }
 
-    listMailboxes(): { id: string; address: string; name: string }[] {
+    listMailboxes(scope: Scope): { id: string; address: string; name: string }[] {
         return [
             ...Object.entries(this.cfg.mailboxes).map(([id, m]) => ({ id, address: m.address, name: m.name })),
             { id: CATCHALL, address: "*", name: "Catch-all" },
-        ];
+        ].filter(m => reaches(scope, m.id));
+    }
+
+    // Out of scope reads as missing, so a scoped token cannot probe other mailboxes.
+
+    async requireMessage(id: string, scope: Scope): Promise<Message> {
+        const message = await this.store.requireMessage(id);
+        if (!reaches(scope, message.mailbox)) throw new NotFoundError(`Message ${id} not found`);
+        return message;
+    }
+
+    async requireThread(id: string, scope: Scope): Promise<Thread> {
+        const thread = await this.store.requireThread(id);
+        if (!reaches(scope, thread.mailbox)) throw new NotFoundError(`Thread ${id} not found`);
+        return thread;
+    }
+
+    /** Scoped actors only reach contacts that take part in one of their threads. */
+    private async requireContactAccess(address: string, scope: Scope): Promise<void> {
+        if (scope === null) return;
+        const threads = await this.store.allThreads();
+        if (!threads.some(t => reaches(scope, t.mailbox) && t.participants.includes(address))) {
+            throw new NotFoundError(`Contact ${address} not found`);
+        }
     }
 
     private mailboxFor(addresses: string[]): string {
@@ -228,10 +252,11 @@ export class Mail {
             participants.some(p => metaMatches(contacts.get(p)?.meta, wanted));
     }
 
-    async listThreads(input: ListThreadsInput = {}): Promise<Thread[]> {
+    async listThreads(input: ListThreadsInput, scope: Scope): Promise<Thread[]> {
         const status = input.status ?? "unanswered";
         const byMeta = await this.metaFilter(input.meta);
         const threads = (await this.store.allThreads()).filter(t => {
+            if (!reaches(scope, t.mailbox)) return false;
             if (byMeta && !byMeta(t.id, t.participants)) return false;
             if (input.mailbox && t.mailbox !== input.mailbox) return false;
             if (input.label && !t.labels[input.label]) return false;
@@ -244,13 +269,13 @@ export class Mail {
         return threads.slice(0, input.limit ?? 50);
     }
 
-    async search(input: SearchInput): Promise<MessageView[]> {
+    async search(input: SearchInput, scope: Scope): Promise<MessageView[]> {
         const terms = tokenize(input.query ?? "");
         const byMeta = await this.metaFilter(input.meta);
         if (!terms.length && !byMeta) throw new InvalidRequestError("pass a query with searchable terms, meta, or both");
         const from = input.from?.toLowerCase();
         const hits = (await this.store.allMessages()).filter(m => {
-            if (m.status === "discarded") return false;
+            if (m.status === "discarded" || !reaches(scope, m.mailbox)) return false;
             if (byMeta && !byMeta(m.thread_id, participantsOf(m))) return false;
             if (input.mailbox && m.mailbox !== input.mailbox) return false;
             if (from && !bareAddress(m.from).includes(from)) return false;
@@ -264,8 +289,8 @@ export class Mail {
         return hits.slice(0, input.limit ?? 50).map(toView);
     }
 
-    async getThread(threadId: string): Promise<{ thread: Thread; context: Context | null; contacts: Contact[]; messages: MessageView[] }> {
-        const thread = await this.store.requireThread(threadId);
+    async getThread(threadId: string, scope: Scope): Promise<{ thread: Thread; context: Context | null; contacts: Contact[]; messages: MessageView[] }> {
+        const thread = await this.requireThread(threadId, scope);
         return { thread, ...(await this.contextOf(thread)), messages: (await threadMessages(this.store, thread)).map(toView) };
     }
 
@@ -278,13 +303,16 @@ export class Mail {
 
     // Context
 
-    getContact(address: string): Promise<Contact | null> {
-        return this.store.getContact(bareAddress(address));
+    async getContact(address: string, scope: Scope): Promise<Contact | null> {
+        const bare = bareAddress(address);
+        await this.requireContactAccess(bare, scope);
+        return this.store.getContact(bare);
     }
 
     async setContact(address: string, patch: ContextPatch, actor: Actor): Promise<Contact> {
         const bare = bareAddress(address);
         if (!bare.includes("@")) throw new InvalidRequestError(`"${address}" is not an email address`);
+        await this.requireContactAccess(bare, actor.scope);
         return this.store.serialize(async () => {
             const contact: Contact = { address: bare, ...this.merge(await this.store.getContact(bare), patch, actor) };
             await this.store.putContact(contact);
@@ -295,7 +323,7 @@ export class Mail {
 
     setThreadContext(threadId: string, patch: ContextPatch, actor: Actor): Promise<Context> {
         return this.store.serialize(async () => {
-            await this.store.requireThread(threadId);
+            await this.requireThread(threadId, actor.scope);
             const context = this.merge(await this.store.getThreadContext(threadId), patch, actor);
             await this.store.putThreadContext(threadId, context);
             await this.store.audit("thread.context", actor, threadId, { ...patch });
@@ -308,29 +336,29 @@ export class Mail {
         return mergeContext(existing, patch, actor);
     }
 
-    async listDrafts(mailbox?: string): Promise<Message[]> {
+    async listDrafts(mailbox: string | undefined, scope: Scope): Promise<Message[]> {
         const drafts = await Promise.all((await this.store.draftIds()).map(id => this.store.requireMessage(id)));
         return drafts
-            .filter(d => !mailbox || d.mailbox === mailbox)
+            .filter(d => reaches(scope, d.mailbox) && (!mailbox || d.mailbox === mailbox))
             .sort((a, b) => b.created_at.localeCompare(a.created_at));
     }
 
     // Organizing
 
     /** Message ids, or thread ids to apply the change to every message in the thread. */
-    private async resolveMessageIds(ids: string[]): Promise<string[]> {
+    private async resolveMessageIds(ids: string[], scope: Scope): Promise<string[]> {
         const out: string[] = [];
         for (const id of ids) {
             const thread = await this.store.getThread(id);
-            if (thread) out.push(...thread.message_ids);
-            else out.push((await this.store.requireMessage(id)).id);
+            if (thread && reaches(scope, thread.mailbox)) out.push(...thread.message_ids);
+            else out.push((await this.requireMessage(id, scope)).id);
         }
         return [...new Set(out)];
     }
 
     private updateMessages(ids: string[], actor: Actor, action: string, change: (m: Message) => void): Promise<number> {
         return this.store.serialize(async () => {
-            const messageIds = await this.resolveMessageIds(ids);
+            const messageIds = await this.resolveMessageIds(ids, actor.scope);
             const threads = new Set<string>();
             for (const id of messageIds) {
                 const message = await this.store.requireMessage(id);
@@ -375,7 +403,7 @@ export class Mail {
         let threadId: string;
 
         if (input.replyToId) {
-            const original = await this.store.requireMessage(input.replyToId);
+            const original = await this.requireMessage(input.replyToId, actor.scope);
             mailbox = input.mailbox ?? original.mailbox;
             const own = bareAddress(this.sendingMailbox(mailbox).address);
             to = input.to ?? (original.direction === "in" ? (original.reply_to.length ? original.reply_to : [original.from]) : original.to);
@@ -397,6 +425,7 @@ export class Mail {
             threadId = nid();
         }
         const sender = this.sendingMailbox(mailbox);
+        if (!reaches(actor.scope, mailbox)) throw new InvalidRequestError(`Mailbox "${mailbox}" is not available to ${actor.name}`);
 
         const draft: Message = {
             id: nid(),
@@ -436,8 +465,8 @@ export class Mail {
         return draft;
     }
 
-    private async requireDraft(id: string): Promise<Message> {
-        const draft = await this.store.requireMessage(id);
+    private async requireDraft(id: string, scope: Scope): Promise<Message> {
+        const draft = await this.requireMessage(id, scope);
         if (draft.status !== "draft") throw new InvalidRequestError(`Message ${id} is not a pending draft (status: ${draft.status})`);
         return draft;
     }
@@ -448,7 +477,7 @@ export class Mail {
      */
     updateDraft(id: string, version: number, patch: DraftPatch, actor: Actor, force = false): Promise<Message> {
         return this.store.serialize(async () => {
-            const draft = await this.requireDraft(id);
+            const draft = await this.requireDraft(id, actor.scope);
             if (draft.version !== version) throw new ConflictError(draft);
             if (actor.kind !== "ui" && draft.edited_by_human && !force) {
                 throw new InvalidRequestError(`Draft ${id} was edited by a human; pass force to overwrite it`);
@@ -469,7 +498,7 @@ export class Mail {
 
     discardDraft(id: string, actor: Actor): Promise<void> {
         return this.store.serialize(async () => {
-            const draft = await this.requireDraft(id);
+            const draft = await this.requireDraft(id, actor.scope);
             draft.status = "discarded";
             await this.store.putMessage(draft);
             await this.store.setDraft(id, false);
@@ -487,7 +516,7 @@ export class Mail {
      * so retrying a failed send repeats the same request instead of sending twice.
      */
     private async sendDraftUnlocked(id: string, actor: Actor): Promise<Message> {
-        const draft = await this.requireDraft(id);
+        const draft = await this.requireDraft(id, actor.scope);
         const sender = this.sendingMailbox(draft.mailbox);
         if (!draft.message_id) {
             draft.message_id = `<${randomUUID()}@${domainOf(sender.address)}>`;
@@ -537,8 +566,8 @@ export class Mail {
         return this.send({ replyToId: messageId, replyAll, text }, actor);
     }
 
-    async getAttachmentUrl(messageId: string, attachmentId: string): Promise<string> {
-        const message = await this.store.requireMessage(messageId);
+    async getAttachmentUrl(messageId: string, attachmentId: string, scope: Scope): Promise<string> {
+        const message = await this.requireMessage(messageId, scope);
         if (!message.provider_id || message.direction !== "in") {
             throw new InvalidRequestError(`Message ${messageId} has no downloadable attachments`);
         }
