@@ -138,38 +138,49 @@ ${when(opts.signedIn, () => h`<dialog class="sheet" id="edit-sheet" aria-label="
 
 /** New mail, opened from the sidebar or the tab bar; a bottom sheet on a phone. */
 function composeDialog(senders: Mailbox[]): View {
-    return h`<dialog class="sheet" id="compose" aria-label="${S.newMail}">
-  <form method="post" action="/compose" enctype="multipart/form-data" data-drop>
+    const from = senders.length > 1
+        ? h`<span class="select"><select id="compose-from" name="mailbox">${join(senders.map(m => h`<option value="${m.id}">${m.address}</option>`))}</select></span>`
+        : h`<input type="hidden" name="mailbox" value="${senders[0]!.id}"><output id="compose-from">${senders[0]!.address}</output>`;
+    return h`<dialog class="sheet" id="compose" aria-label="${S.newMail}">${mailForm("compose", "/compose", {
+        head: h`<div class="field compact"><label for="compose-from">${S.from}</label>${from}</div>`, to: "", cc: "", subject: "", text: "",
+    })}</dialog>`;
+}
+
+/** A reply opened from the reply box, shown in the edit sheet; nothing is saved until Save or Send. */
+export function replyForm(threadId: string, query: string, replyToId: string, fields: { to: string; cc: string; subject: string; text: string }): View {
+    return mailForm("reply", `/threads/${threadId}/reply/full?${query}`, {
+        ...fields,
+        head: h`<input type="hidden" name="reply_to_id" value="${replyToId}"><div class="sheet-head"></div>`,
+    });
+}
+
+/** New mail and the full reply: recipients, subject, body and files, saved or sent in one post. */
+function mailForm(id: string, action: string, f: { head: View; to: string; cc: string; subject: string; text: string }): View {
+    return h`<form method="post" action="${action}" enctype="multipart/form-data" data-drop>
     <div class="grabber" aria-hidden="true"></div>
     <button type="button" class="icon-btn sheet-close" data-close aria-label="${S.close}">${icon("close")}</button>
-    <div class="field compact">
-      <label for="compose-from">${S.from}</label>
-      ${senders.length > 1
-        ? h`<span class="select"><select id="compose-from" name="mailbox">${join(senders.map(m => h`<option value="${m.id}">${m.address}</option>`))}</select></span>`
-        : h`<input type="hidden" name="mailbox" value="${senders[0]!.id}"><output id="compose-from">${senders[0]!.address}</output>`}
+    ${f.head}
+    <div class="field">
+      <label for="${id}-to">${S.to}</label>
+      <input id="${id}-to" name="to" value="${f.to}" autocomplete="off" required>
+      ${when(!f.cc, () => h`<button type="button" class="link" onclick="this.remove();var r=document.getElementById('${id}-cc-row');r.hidden=false;r.querySelector('input').focus()">${S.cc}</button>`)}
+    </div>
+    <div class="field" id="${id}-cc-row" ${raw(f.cc ? "" : "hidden")}>
+      <label for="${id}-cc">${S.cc}</label>
+      <input id="${id}-cc" name="cc" value="${f.cc}" autocomplete="off">
     </div>
     <div class="field">
-      <label for="compose-to">${S.to}</label>
-      <input id="compose-to" name="to" autocomplete="off" required>
-      <button type="button" class="link" onclick="this.remove();var r=document.getElementById('compose-cc-row');r.hidden=false;r.querySelector('input').focus()">${S.cc}</button>
+      <label for="${id}-subject">${S.subject}</label>
+      <input id="${id}-subject" name="subject" value="${f.subject}" required>
     </div>
-    <div class="field" id="compose-cc-row" hidden>
-      <label for="compose-cc">${S.cc}</label>
-      <input id="compose-cc" name="cc" autocomplete="off">
-    </div>
-    <div class="field">
-      <label for="compose-subject">${S.subject}</label>
-      <input id="compose-subject" name="subject" required>
-    </div>
-    <textarea name="text" aria-label="${S.body}" required></textarea>
+    <textarea name="text" aria-label="${S.body}" required>${f.text}</textarea>
     <div class="sheet-actions">
-      <label class="icon-btn" aria-label="${S.attach}">${icon("attach")}<input type="file" name="files" id="compose-files" multiple hidden></label>
-      <output class="sheet-files" id="compose-file-names"></output>
+      <label class="icon-btn" aria-label="${S.attach}">${icon("attach")}<input type="file" name="files" multiple hidden data-file-names></label>
+      <output class="sheet-files"></output>
       <button type="submit" name="action" value="save">${S.saveDraft}</button>
       <button type="submit" name="action" value="send" class="primary">${S.send}${icon("send")}</button>
     </div>
-  </form>
-</dialog>`;
+  </form>`;
 }
 
 export function message(lines: string[]): View {
@@ -345,11 +356,6 @@ export function draftEditor(d: Message, form: DraftForm, conflict: Message | nul
 </form>`;
 }
 
-/** A reply opened in the edit sheet from the reply box; the thread reloads when the sheet closes, to show the new draft. */
-export function newReplyEditor(d: Message): View {
-    return h`<div data-reload-on-close hidden></div>${draftEditor(d, { to: d.to.join(", "), cc: d.cc.join(", "), subject: d.subject, text: d.text }, null)}`;
-}
-
 /** The editor's attachment list with remove buttons, and the picker that drag and drop also feeds. */
 export function draftFiles(d: Message, error: string | null): View {
     return h`<div class="draft-files" id="files-${d.id}">
@@ -464,7 +470,7 @@ export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextV
   <div class="messages" data-scroll-end>${join(items)}</div>
   ${when(opts.reply.allowed, () => h`<form class="composer" method="post" action="/threads/${thread.id}/reply?${query}">
     ${when(opts.reply.replyAll, () => h`<label class="reply-all"><input type="checkbox" name="reply_all" value="1">${S.replyAll}</label>`)}
-    <button type="button" class="icon-btn" aria-label="${S.fullReply}" title="${S.fullReply}" hx-post="/threads/${thread.id}/reply/full" hx-target="#edit-sheet" hx-swap="innerHTML">${icon("plus")}</button>
+    <button type="button" class="icon-btn" aria-label="${S.fullReply}" title="${S.fullReply}" hx-get="/threads/${thread.id}/reply/full?${query}" hx-include="closest form" hx-target="#edit-sheet" hx-swap="innerHTML">${icon("plus")}</button>
     <textarea name="text" rows="1" aria-label="${S.reply}" placeholder="${S.reply}…" required></textarea>
     <button type="submit" name="action" value="save" class="icon-btn" aria-label="${S.saveDraft}" title="${S.saveDraft}">${icon("drafts")}</button>
     <button type="submit" name="action" value="send" class="primary send" aria-label="${S.send}" title="${S.send}">${icon("send")}</button>

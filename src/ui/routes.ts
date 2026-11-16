@@ -240,15 +240,38 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     });
 
     /** Replies to the latest message; a reply sent from here gets the same undo window as a draft. */
-    /** Opens a reply to the latest message in the edit sheet, for Cc, subject and attachments. */
-    app.post("/threads/:id/reply/full", async c => {
-        const actor = uiActor(c.get("session"));
-        const body = await c.req.parseBody();
-        const { messages } = await mail.getThread(c.req.param("id"), actor.scope);
+    /** The reply box's full form, for Cc, subject and files; nothing is created until it is posted. */
+    app.get("/threads/:id/reply/full", async c => {
+        const id = c.req.param("id");
+        const scope = c.get("session").scope;
+        const { messages } = await mail.getThread(id, scope);
         const latest = messages.filter(m => m.status !== "draft").at(-1);
         if (!latest) throw new InvalidRequestError("nothing to reply to");
-        const draft = await mail.createDraft({ replyToId: latest.id, replyAll: body.reply_all === "1", text: String(body.text ?? "") }, actor);
-        return c.html(V.newReplyEditor(draft));
+        const reply = await mail.replyTo(latest.id, c.req.query("reply_all") === "1", scope);
+        const fields = { to: reply.to.join(", "), cc: reply.cc.join(", "), subject: reply.subject, text: c.req.query("text") ?? "" };
+        return c.html(V.replyForm(id, V.inboxQuery(inboxFilter(c)), latest.id, fields));
+    });
+
+    app.post("/threads/:id/reply/full", async c => {
+        const actor = uiActor(c.get("session"));
+        const body = await c.req.parseBody({ all: true });
+        const { files, error } = uploads(body);
+        if (error) return page(c, S.reply, V.message([error]), "inbox", 400);
+        try {
+            const draft = await mail.createDraft({
+                replyToId: String(body.reply_to_id ?? ""),
+                to: splitAddresses(String(body.to ?? "")),
+                cc: splitAddresses(String(body.cc ?? "")),
+                subject: String(body.subject ?? ""),
+                text: String(body.text ?? ""),
+            }, actor);
+            await attachAll(draft.id, files, actor);
+            if (body.action === "send") await mail.schedule(draft.id, "send", actor);
+        } catch (err) {
+            if (err instanceof InvalidRequestError) return page(c, S.reply, V.message([err.message]), "inbox", 400);
+            throw err;
+        }
+        return c.redirect(`/threads/${c.req.param("id")}?${V.inboxQuery(inboxFilter(c))}`, 303);
     });
 
     app.post("/threads/:id/reply", async c => {

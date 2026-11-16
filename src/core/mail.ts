@@ -409,6 +409,19 @@ export class Mail {
         return this.store.serialize(() => this.createDraftUnlocked(input, actor));
     }
 
+    /** Who a reply to `replyToId` goes to and its subject, without creating anything. */
+    async replyTo(replyToId: string, replyAll: boolean, scope: Scope): Promise<{ mailbox: string; to: string[]; cc: string[]; subject: string }> {
+        return this.replyDefaults(await this.requireMessage(replyToId, scope), {}, replyAll);
+    }
+
+    private replyDefaults(original: Message, given: { mailbox?: string; to?: string[] }, replyAll: boolean) {
+        const mailbox = given.mailbox ?? original.mailbox;
+        const to = given.to ?? (original.direction === "in" ? (original.reply_to.length ? original.reply_to : [original.from]) : original.to);
+        const already = new Set([bareAddress(this.sendingMailbox(mailbox).address), ...to.map(bareAddress)]);
+        const cc = replyAll ? [...original.to, ...original.cc].filter(a => !already.has(bareAddress(a))) : [];
+        return { mailbox, to, cc, subject: replySubject(original.subject) };
+    }
+
     private async createDraftUnlocked(input: CreateDraftInput, actor: Actor): Promise<Message> {
         const now = new Date().toISOString();
         let mailbox: string;
@@ -421,14 +434,11 @@ export class Mail {
 
         if (input.replyToId) {
             const original = await this.requireMessage(input.replyToId, actor.scope);
-            mailbox = input.mailbox ?? original.mailbox;
-            const own = bareAddress(this.sendingMailbox(mailbox).address);
-            to = input.to ?? (original.direction === "in" ? (original.reply_to.length ? original.reply_to : [original.from]) : original.to);
-            if (input.replyAll && !input.cc) {
-                const already = new Set([own, ...to.map(bareAddress)]);
-                cc = [...original.to, ...original.cc].filter(a => !already.has(bareAddress(a)));
-            }
-            subject = input.subject ?? replySubject(original.subject);
+            const defaults = this.replyDefaults(original, input, !!input.replyAll && !input.cc);
+            mailbox = defaults.mailbox;
+            to = defaults.to;
+            if (!input.cc) cc = defaults.cc;
+            subject = input.subject ?? defaults.subject;
             inReplyTo = original.message_id;
             references = original.message_id ? [...original.references, original.message_id] : original.references;
             threadId = original.thread_id;

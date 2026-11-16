@@ -23,14 +23,9 @@ document.addEventListener("htmx:afterSwap", event => {
     sheet.querySelector("textarea")?.focus();
 });
 
-// Closing the sheet on a reply started from the reply box shows its new draft in the thread.
-document.addEventListener("close", event => {
-    if (event.target.id === "edit-sheet" && event.target.querySelector("[data-reload-on-close]")) location.reload();
-}, true);
-
 document.addEventListener("change", event => {
-    if (event.target.id === "compose-files") {
-        document.getElementById("compose-file-names").textContent = [...event.target.files].map(f => f.name).join(", ");
+    if (event.target.matches("[data-file-names]")) {
+        event.target.closest("form").querySelector(".sheet-files").textContent = [...event.target.files].map(f => f.name).join(", ");
     }
 });
 

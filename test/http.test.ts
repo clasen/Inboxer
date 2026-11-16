@@ -366,10 +366,19 @@ describe("http", () => {
         assert.ok(card.includes(`class="msg mine"`), "the sent reply takes its place as a bubble");
         assert.ok(card.includes("Sent now"));
 
-        const full = await (await req(h, `/threads/${thread.id}/reply/full`, { method: "POST", cookie, body: new URLSearchParams({ text: "Longer answer" }) })).text();
-        assert.ok(full.includes(`value="Re: Trial question"`) && full.includes(`type="file"`), "the full reply edits subject and takes files");
-        const { data: open } = await call(client, "list_drafts");
-        assert.ok(open.some((d: { text: string }) => d.text === "Longer answer"), "it starts as a draft with the typed text");
+        const before = (await call(client, "list_drafts")).data.length;
+        const full = await (await req(h, `/threads/${thread.id}/reply/full?text=Longer+answer`, { cookie })).text();
+        assert.ok(full.includes(`value="Re: Trial question"`) && full.includes(`type="file"`) && full.includes("Longer answer"), "the full reply edits subject and takes files");
+        assert.equal((await call(client, "list_drafts")).data.length, before, "opening the full reply creates nothing");
+
+        const replyToId = /name="reply_to_id" value="([^"]+)"/.exec(full)![1]!;
+        const body = new FormData();
+        for (const [k, v] of Object.entries({ reply_to_id: replyToId, to: "ana@customer.test", cc: "", subject: "Re: Trial question", text: "Longer answer", action: "save" })) body.set(k, v);
+        body.append("files", new File(["x"], "terms.txt", { type: "text/plain" }));
+        assert.equal((await req(h, `/threads/${thread.id}/reply/full`, { method: "POST", cookie, body })).status, 303);
+        const { data: after } = await call(client, "list_drafts");
+        const created = after.find((d: { text: string }) => d.text === "Longer answer");
+        assert.deepEqual([after.length, created.thread_id, created.attachments.map((a: { filename: string }) => a.filename)], [before + 1, thread.id, ["terms.txt"]]);
         await client.close();
     });
 
