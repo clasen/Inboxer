@@ -1,6 +1,6 @@
 {
   "name": "inboxer",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A self-hosted mail layer for agents: persists every inbound and outbound email, exposes an MCP server, and ships a minimal UI to review drafts.",
   "type": "module",
   "main": "./dist/index.js",
