@@ -464,7 +464,7 @@ export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextV
   <div class="messages" data-scroll-end>${join(items)}</div>
   ${when(opts.reply.allowed, () => h`<form class="composer" method="post" action="/threads/${thread.id}/reply?${query}">
     ${when(opts.reply.replyAll, () => h`<label class="reply-all"><input type="checkbox" name="reply_all" value="1">${S.replyAll}</label>`)}
-    <button type="button" class="icon-btn" aria-label="${S.attach}" title="${S.attach}" hx-post="/threads/${thread.id}/reply/full" hx-target="#edit-sheet" hx-swap="innerHTML">${icon("attach")}</button>
+    <button type="button" class="icon-btn" aria-label="${S.fullReply}" title="${S.fullReply}" hx-post="/threads/${thread.id}/reply/full" hx-target="#edit-sheet" hx-swap="innerHTML">${icon("plus")}</button>
     <textarea name="text" rows="1" aria-label="${S.reply}" placeholder="${S.reply}…" required></textarea>
     <button type="submit" name="action" value="save" class="icon-btn" aria-label="${S.saveDraft}" title="${S.saveDraft}">${icon("drafts")}</button>
     <button type="submit" name="action" value="send" class="primary send" aria-label="${S.send}" title="${S.send}">${icon("send")}</button>

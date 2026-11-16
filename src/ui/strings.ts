@@ -39,6 +39,7 @@ export const S = {
     newMail: "New mail",
     saveDraft: "Save draft",
     reply: "Reply",
+    fullReply: "Reply with Cc and attachments",
     replyAll: "Reply all",
     today: "Today",
     yesterday: "Yesterday",
