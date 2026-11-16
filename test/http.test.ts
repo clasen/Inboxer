@@ -332,6 +332,54 @@ describe("http", () => {
         await client.close();
     });
 
+    test("a reply from the thread view goes out after the undo window; a saved one stays a draft", async () => {
+        const cookie = await signIn(h);
+        h.provider.addInbound({ providerId: "r" });
+        await webhook(h, [{ type: "received", providerId: "r" }]);
+        const client = await mcpClient(h);
+        const [thread] = (await call(client, "list_threads")).data;
+
+        const page = await (await req(h, `/threads/${thread.id}`, { cookie })).text();
+        assert.ok(page.includes(`action="/threads/${thread.id}/reply?status=unanswered"`));
+
+        const saved = await req(h, `/threads/${thread.id}/reply?status=all`, { method: "POST", cookie, body: new URLSearchParams({ text: "Draft only", action: "save" }) });
+        assert.equal(saved.headers.get("location"), `/threads/${thread.id}?status=all`);
+        const { data: drafts } = await call(client, "list_drafts");
+        assert.deepEqual(drafts.map((d: { text: string; to: string[] }) => [d.text, d.to]), [["Draft only", ["Ana <ana@customer.test>"]]]);
+        assert.equal(h.provider.sent.length, 0);
+
+        await req(h, `/threads/${thread.id}/reply`, { method: "POST", cookie, body: new URLSearchParams({ text: "Sent now", action: "send" }) });
+        assert.equal(h.provider.sent.length, 0, "the send waits for the undo window");
+        await new Promise(resolve => setTimeout(resolve, 120));
+        const [sent] = h.provider.sent;
+        assert.deepEqual(sent!.message.to, ["Ana <ana@customer.test>"]);
+        assert.equal(sent!.message.subject, "Re: Trial question");
+        assert.ok(sent!.message.headers["In-Reply-To"], "threaded as a reply");
+        assert.match(sent!.message.text, /^Sent now/);
+        await client.close();
+    });
+
+    test("New mail starts a thread with a draft, or sends it", async () => {
+        const cookie = await signIn(h);
+        const home = await (await req(h, "/", { cookie })).text();
+        assert.ok(home.includes(`<option value="support">support@inboxer.test</option>`), "the sheet offers sending mailboxes");
+        assert.ok(!home.includes(`<option value="catchall">`), "never the catch-all");
+
+        const form = { mailbox: "support", to: "bob@other.test", cc: "", subject: "Hello", text: "First line", action: "save" };
+        const saved = await req(h, "/compose", { method: "POST", cookie, body: new URLSearchParams(form) });
+        assert.equal(saved.status, 303);
+        const thread = await (await req(h, saved.headers.get("location")!, { cookie })).text();
+        assert.ok(thread.includes("First line"));
+        assert.equal(h.provider.sent.length, 0);
+
+        await req(h, "/compose", { method: "POST", cookie, body: new URLSearchParams({ ...form, subject: "Now", action: "send" }) });
+        await new Promise(resolve => setTimeout(resolve, 120));
+        assert.deepEqual(h.provider.sent.map(s => [s.message.to, s.message.subject]), [[["bob@other.test"], "Now"]]);
+
+        const refused = await req(h, "/compose", { method: "POST", cookie, body: new URLSearchParams({ ...form, mailbox: "catchall" }) });
+        assert.equal(refused.status, 400);
+    });
+
     test("context set through MCP shows in get_thread and, escaped, in the UI", async () => {
         const cookie = await signIn(h);
         h.provider.addInbound({ providerId: "q" });

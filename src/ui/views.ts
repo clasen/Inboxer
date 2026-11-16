@@ -1,5 +1,6 @@
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
+import { bareAddress } from "../core/address.ts";
 import type { MessageView } from "../core/mail.ts";
 import type { Contact, Context, Message, Session, Thread } from "../types.ts";
 import { ASSETS } from "./assets.ts";
@@ -7,7 +8,7 @@ import { S } from "./strings.ts";
 
 export type View = HtmlEscapedString;
 export type Theme = "system" | "light" | "dark";
-export type Page = "drafts" | "inbox" | "devices" | null;
+export type Page = "drafts" | "inbox" | "devices" | "settings" | null;
 
 /** Views never await, so `html` returns a plain escaped string. */
 function h(strings: TemplateStringsArray, ...values: unknown[]): View {
@@ -22,45 +23,151 @@ function when(condition: unknown, view: () => View): View | "" {
     return condition ? view() : "";
 }
 
-function formatDate(iso: string): string {
+const ICONS = {
+    back: '<path d="M15 18l-6-6 6-6"/>',
+    archive: '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 001 1h12a1 1 0 001-1V9"/><path d="M10 13h4"/>',
+    unarchive: '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 001 1h12a1 1 0 001-1V9"/><path d="M12 17v-5M9.5 14.5L12 12l2.5 2.5"/>',
+    drafts: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/>',
+    inbox: '<path d="M3 13l3-8h12l3 8v6a1 1 0 01-1 1H4a1 1 0 01-1-1z"/><path d="M3 13h5l1 3h6l1-3h5"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    devices: '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+    send: '<path d="M5 12h14"/><path d="M13 6l6 6-6 6"/>',
+    close: '<path d="M6 6l12 12M18 6L6 18"/>',
+} as const;
+
+function icon(name: keyof typeof ICONS): View {
+    return raw(`<svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`) as View;
+}
+
+const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
+
+function formatTime(iso: string): string {
+    return new Date(iso).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+}
+
+function formatDay(iso: string): string {
     const date = new Date(iso);
-    const sameDay = date.toDateString() === new Date().toDateString();
-    return sameDay
-        ? date.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" })
+    const now = new Date();
+    return date.getFullYear() === now.getFullYear()
+        ? date.toLocaleDateString("en", { month: "short", day: "numeric" })
         : date.toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" });
 }
 
-export function layout(title: string, body: View, opts: { theme: Theme; page: Page; draftCount?: number; signedIn: boolean; domains?: string[] }): View {
-    const nav = (page: Page, href: string, label: string, extra: View | "" = "") =>
-        h`<a href="${href}" ${raw(opts.page === page ? 'aria-current="page"' : "")}>${label}${extra}</a>`;
+/** A time today, a day otherwise. */
+function formatDate(iso: string): string {
+    return sameDay(new Date(iso), new Date()) ? formatTime(iso) : formatDay(iso);
+}
+
+function dayLabel(iso: string): string {
+    const date = new Date(iso);
+    const yesterday = new Date(Date.now() - 86_400_000);
+    if (sameDay(date, new Date())) return S.today;
+    if (sameDay(date, yesterday)) return S.yesterday;
+    return formatDay(iso);
+}
+
+/** Display name from `Name <a@b.com>`, else the bare address. */
+function displayName(address: string): string {
+    const match = /^\s*"?([^"<]+?)"?\s*</.exec(address);
+    return match ? match[1]! : bareAddress(address);
+}
+
+function initials(address: string): string {
+    const name = displayName(address);
+    const words = (name.includes("@") ? name.split("@")[0]! : name).split(/[\s._-]+/).filter(Boolean);
+    return (words.length > 1 ? words[0]![0]! + words[1]![0]! : (words[0] ?? "?").slice(0, 2)).toUpperCase();
+}
+
+export interface Mailbox {
+    id: string;
+    address: string;
+}
+
+export interface LayoutOptions {
+    theme: Theme;
+    page: Page;
+    signedIn: boolean;
+    draftCount?: number;
+    domains?: string[];
+    /** Mailboxes the session can send from; New mail shows only when there is one. */
+    senders?: Mailbox[];
+    /** Thread pages fill the screen on a phone, so the tab bar gives way to the reply box. */
+    fullScreen?: boolean;
+}
+
+export function layout(title: string, body: View, opts: LayoutOptions): View {
+    const link = (page: Page, href: string, label: string, name: keyof typeof ICONS, extra: View | "" = "") =>
+        h`<a href="${href}" ${raw(opts.page === page ? 'aria-current="page"' : "")}>${icon(name)}<span>${label}</span>${extra}</a>`;
+    const count = opts.draftCount ? h`<span class="count">${opts.draftCount}</span>` : "";
+    const canSend = !!opts.senders?.length;
     return h`<!doctype html>
 <html lang="en" ${raw(opts.theme === "system" ? "" : `data-theme="${opts.theme}"`)}>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${title} · ${S.appName}</title>
 <link rel="stylesheet" href="${ASSETS["style.css"]!.url}">
 <script src="${ASSETS["htmx.min.js"]!.url}" defer></script>
 <script src="${ASSETS["app.js"]!.url}" defer></script>
 </head>
-<body>
-${when(opts.signedIn, () => h`<header>
-  <nav>
-    ${nav("drafts", "/", S.navDrafts, opts.draftCount ? h` <span class="count">${opts.draftCount}</span>` : "")}
-    ${nav("inbox", "/inbox", S.navInbox)}
-    ${nav("devices", "/devices", S.navDevices)}
+<body class="${opts.signedIn ? "app" : ""} ${opts.fullScreen ? "full" : ""}">
+${when(opts.signedIn, () => h`<aside class="sidebar">
+  <div class="brand">${S.appName}<span>.</span></div>
+  ${when(opts.domains?.length, () => h`<div class="domain">${opts.domains!.join(" · ")}</div>`)}
+  ${when(canSend, () => h`<button type="button" class="primary new-mail" data-compose>${icon("plus")}${S.newMail}</button>`)}
+  <nav class="side-nav" aria-label="${S.mainNav}">
+    ${link("drafts", "/", S.navDrafts, "drafts", count)}
+    ${link("inbox", "/inbox", S.navInbox, "inbox")}
+    ${link("devices", "/devices", S.navDevices, "devices")}
   </nav>
-  <form method="post" action="/theme">
-    <span class="select"><select name="theme" aria-label="${S.theme}" onchange="this.form.submit()">
-      ${join((["system", "light", "dark"] as const).map(t =>
-          h`<option value="${t}" ${raw(t === opts.theme ? "selected" : "")}>${{ system: S.themeSystem, light: S.themeLight, dark: S.themeDark }[t]}</option>`))}
-    </select></span>
-  </form>
-  <form method="post" action="/logout"><button class="link">${S.logout}</button></form>
-</header>`)}
-<main>${when(opts.domains?.length, () => h`<div class="domain">${opts.domains!.join(" · ")}</div>`)}${body}</main>
+  <nav class="side-nav side-end" aria-label="${S.navSettings}">${link("settings", "/settings", S.navSettings, "settings")}</nav>
+</aside>`)}
+<main>${body}</main>
+${when(opts.signedIn, () => h`<nav class="tabbar" aria-label="${S.mainNav}">
+  ${link("drafts", "/", S.navDrafts, "drafts", count)}
+  ${link("inbox", "/inbox", S.navInbox, "inbox")}
+  ${when(canSend, () => h`<button type="button" class="tab-compose" data-compose aria-label="${S.newMail}"><span>${icon("plus")}</span></button>`)}
+  ${link("devices", "/devices", S.navDevices, "devices")}
+  ${link("settings", "/settings", S.navSettings, "settings")}
+</nav>`)}
+${when(opts.signedIn && canSend, () => composeDialog(opts.senders!))}
 </body>
 </html>`;
+}
+
+/** New mail, opened from the sidebar or the tab bar; a bottom sheet on a phone. */
+function composeDialog(senders: Mailbox[]): View {
+    return h`<dialog class="sheet" id="compose" aria-label="${S.newMail}">
+  <form method="post" action="/compose">
+    <div class="grabber" aria-hidden="true"></div>
+    <button type="button" class="icon-btn sheet-close" data-close aria-label="${S.close}">${icon("close")}</button>
+    <div class="field compact">
+      <label for="compose-from">${S.from}</label>
+      ${senders.length > 1
+        ? h`<span class="select"><select id="compose-from" name="mailbox">${join(senders.map(m => h`<option value="${m.id}">${m.address}</option>`))}</select></span>`
+        : h`<input type="hidden" name="mailbox" value="${senders[0]!.id}"><output id="compose-from">${senders[0]!.address}</output>`}
+    </div>
+    <div class="field">
+      <label for="compose-to">${S.to}</label>
+      <input id="compose-to" name="to" autocomplete="off" required>
+      <button type="button" class="link" onclick="this.remove();var r=document.getElementById('compose-cc-row');r.hidden=false;r.querySelector('input').focus()">${S.cc}</button>
+    </div>
+    <div class="field" id="compose-cc-row" hidden>
+      <label for="compose-cc">${S.cc}</label>
+      <input id="compose-cc" name="cc" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="compose-subject">${S.subject}</label>
+      <input id="compose-subject" name="subject" required>
+    </div>
+    <textarea name="text" aria-label="${S.body}" required></textarea>
+    <div class="sheet-actions">
+      <button type="submit" name="action" value="save">${S.saveDraft}</button>
+      <button type="submit" name="action" value="send" class="primary">${S.send}${icon("send")}</button>
+    </div>
+  </form>
+</dialog>`;
 }
 
 export function message(lines: string[]): View {
@@ -76,7 +183,7 @@ export function signIn(token: string, valid: boolean): View {
 }
 
 function mailboxBadge(mailbox: string): View {
-    return h`<span class="badge">${mailbox}</span>`;
+    return h`<span class="badge mailbox">${mailbox}</span>`;
 }
 
 const PREVIEWABLE = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
@@ -114,6 +221,12 @@ function withoutImagePlaceholders(m: MessageView): string {
     return text.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function recipients(m: MessageView): View | "" {
+    if (!m.to.length && !m.cc.length) return "";
+    return h`<div class="meta">${when(m.to.length, () => h`<span>${S.to}: ${m.to.join(", ")}</span>`)}${when(m.cc.length, () => h`<span>${S.cc}: ${m.cc.join(", ")}</span>`)}</div>`;
+}
+
+/** A message in a draft's history on the Drafts page. */
 export function messageCard(m: MessageView): View {
     return h`<article class="card ${m.direction}">
   <div class="meta">
@@ -121,9 +234,22 @@ export function messageCard(m: MessageView): View {
     <span>${formatDate(m.date)}</span>
     ${when(m.direction === "out" && m.status !== "draft", () => h`<span>${m.status}</span>`)}
   </div>
-  ${when(m.to.length || m.cc.length, () => h`<div class="meta">${when(m.to.length, () => h`<span>${S.to}: ${m.to.join(", ")}</span>`)}${when(m.cc.length, () => h`<span>${S.cc}: ${m.cc.join(", ")}</span>`)}</div>`)}
+  ${recipients(m)}
   <pre class="body">${withoutImagePlaceholders(m)}</pre>
   ${attachments(m)}
+</article>`;
+}
+
+/** A message in a thread: received ones on the left, ours on the right. */
+export function messageBubble(m: MessageView, showSender: boolean): View {
+    const mine = m.direction === "out";
+    const extra = m.cc.length || m.to.length > (mine ? 1 : 0);
+    return h`<article class="msg ${mine ? "mine" : "theirs"}" id="m-${m.id}">
+  ${when(showSender && !mine, () => h`<div class="msg-from">${displayName(m.from)}</div>`)}
+  ${extra ? recipients(m) : ""}
+  <pre class="body">${withoutImagePlaceholders(m)}</pre>
+  ${attachments(m)}
+  <span class="msg-time">${formatTime(m.date)}${mine ? ` · ${m.status}` : ""}</span>
 </article>`;
 }
 
@@ -132,19 +258,27 @@ export interface ContextView {
     contacts: Contact[];
 }
 
-/** Read-only context agents attached to the thread and its participants. */
-function contextBlock(ctx: ContextView | null): View | "" {
-    if (!ctx) return "";
-    const rows = [
-        ...ctx.contacts.map(c => ({ who: c.address, meta: c.meta, note: c.note })),
+function contextRows(ctx: ContextView): { who: string; meta: Context["meta"]; note: string | null }[] {
+    return [
         ...(ctx.context ? [{ who: S.thisThread, meta: ctx.context.meta, note: ctx.context.note }] : []),
+        ...ctx.contacts.map(c => ({ who: c.address, meta: c.meta, note: c.note })),
     ].filter(r => r.note || Object.keys(r.meta).length);
-    if (!rows.length) return "";
-    return h`<details class="context"><summary>${S.context}</summary>${join(rows.map(r => h`<section>
+}
+
+function contextSections(rows: ReturnType<typeof contextRows>): View {
+    return join(rows.map(r => h`<section>
   <div class="who">${r.who}</div>
   ${when(Object.keys(r.meta).length, () => h`<dl>${join(Object.entries(r.meta).map(([k, v]) => h`<dt>${k}</dt><dd>${String(v)}</dd>`))}</dl>`)}
   ${when(r.note, () => h`<p>${r.note}</p>`)}
-</section>`))}</details>`;
+</section>`));
+}
+
+/** Read-only context agents attached to the thread and its participants, folded on a draft card. */
+function contextBlock(ctx: ContextView | null): View | "" {
+    if (!ctx) return "";
+    const rows = contextRows(ctx);
+    if (!rows.length) return "";
+    return h`<details class="context"><summary>${S.context}</summary>${contextSections(rows)}</details>`;
 }
 
 /** A send or discard in its undo window; reloads itself when the window closes. */
@@ -159,25 +293,27 @@ function pendingCard(d: Message): View {
 </article>`;
 }
 
+/** A draft for review: a card on the Drafts page, a bubble on our side of a thread. */
 export function draftCard(d: Message, history: MessageView[], ctx: ContextView | null): View {
     if (d.pending) return pendingCard(d);
-    return h`<article class="card" id="draft-${d.id}">
+    return h`<article class="card draft" id="draft-${d.id}">
   <div class="meta">
-    ${mailboxBadge(d.mailbox)}
     <span class="badge draft">${S.draft}</span>
-    ${when(d.edited_by_human, () => h`<span>${S.editedByHuman}</span>`)}
-    <span>${formatDate(d.created_at)}</span>
+    ${mailboxBadge(d.mailbox)}
+    <span>${d.edited_by_human ? S.editedByHuman : S.byAgent} · ${formatDate(d.created_at)}</span>
   </div>
-  <div class="meta"><span>${S.to}: <strong>${d.to.join(", ")}</strong></span>${when(d.cc.length, () => h`<span>${S.cc}: ${d.cc.join(", ")}</span>`)}</div>
-  <div class="subject">${d.subject}</div>
+  <div class="draft-head">
+    <div class="meta"><span>${S.to}: <strong>${d.to.join(", ")}</strong></span>${when(d.cc.length, () => h`<span>${S.cc}: ${d.cc.join(", ")}</span>`)}</div>
+    <div class="subject">${d.subject}</div>
+  </div>
   ${contextBlock(ctx)}
   ${when(d.note, () => h`<div class="note">${d.note}</div>`)}
   <pre class="body">${d.text}</pre>
   ${attachments(d)}
   <div class="actions">
+    <button class="danger" hx-post="/drafts/${d.id}/discard" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.discard}</button>
     <button hx-get="/drafts/${d.id}/edit" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.edit}</button>
     <button class="primary" hx-post="/drafts/${d.id}/send" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.send}</button>
-    <button class="danger" hx-post="/drafts/${d.id}/discard" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.discard}</button>
   </div>
   ${when(history.length, () => h`<details>
     <summary>${S.thread} (${history.length})</summary>
@@ -195,9 +331,9 @@ export interface DraftForm {
 
 export function draftEditor(d: Message, form: DraftForm, conflict: Message | null): View {
     const version = conflict ? conflict.version : d.version;
-    return h`<article class="card ${conflict ? "conflict" : ""}" id="draft-${d.id}" data-drop>
+    return h`<article class="card draft editing ${conflict ? "conflict" : ""}" id="draft-${d.id}" data-drop>
   <div class="drop-hint">${S.dropFiles}</div>
-  <div class="meta">${mailboxBadge(d.mailbox)}<span class="badge draft">${S.draft}</span></div>
+  <div class="meta"><span class="badge draft">${S.draft}</span>${mailboxBadge(d.mailbox)}</div>
   ${when(d.note, () => h`<div class="note">${d.note}</div>`)}
   ${when(conflict, () => h`<p class="warn">${S.conflictTitle}</p><div class="subject">${S.yourVersion}</div>`)}
   <form hx-post="/drafts/${d.id}/save" hx-target="#draft-${d.id}" hx-swap="outerHTML">
@@ -218,9 +354,9 @@ export function draftEditor(d: Message, form: DraftForm, conflict: Message | nul
     <textarea id="text-${d.id}" name="text" aria-label="${S.body}" required>${form.text}</textarea>
     ${draftFiles(d, null)}
     <div class="actions">
+      <button type="button" class="link" hx-get="/drafts/${d.id}/card" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.cancel}</button>
       <button type="submit">${S.save}</button>
       <button type="submit" name="send" value="1" class="primary">${S.saveAndSend}</button>
-      <button type="button" class="link" hx-get="/drafts/${d.id}/card" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.cancel}</button>
     </div>
   </form>
   ${when(conflict, () => h`<details open>
@@ -248,56 +384,117 @@ export function draftDone(id: string, text: string): View {
 }
 
 export function draftsPage(drafts: { draft: Message; history: MessageView[]; ctx: ContextView }[]): View {
-    return h`<h1>${S.navDrafts}</h1>
-${drafts.length ? join(drafts.map(d => draftCard(d.draft, d.history, d.ctx))) : h`<p class="empty">${S.draftsEmpty}</p>`}`;
+    return h`<div class="page">
+<h1>${S.navDrafts}</h1>
+${drafts.length ? join(drafts.map(d => draftCard(d.draft, d.history, d.ctx))) : h`<p class="empty">${S.draftsEmpty}</p>`}
+</div>`;
 }
 
-export function inboxPage(threads: Thread[], mailboxes: string[], filter: { mailbox: string; status: string }, own: Set<string>): View {
-    const tab = (status: string, label: string) => {
-        const query = new URLSearchParams({ status, ...(filter.mailbox ? { mailbox: filter.mailbox } : {}) });
-        return h`<a href="/inbox?${query.toString()}" ${raw(filter.status === status ? 'aria-current="page"' : "")}>${label}</a>`;
-    };
-    return h`<h1>${S.navInbox}</h1>
-<form class="filters" method="get" action="/inbox">
-  <input type="hidden" name="status" value="${filter.status}">
-  <span class="select"><select name="mailbox" aria-label="${S.filter}" onchange="this.form.submit()">
-    <option value="">${S.allMailboxes}</option>
-    ${join(mailboxes.map(m => h`<option value="${m}" ${raw(m === filter.mailbox ? "selected" : "")}>${m}</option>`))}
-  </select></span>
-  <nav class="tabs">${tab("unanswered", S.filterUnanswered)}${tab("all", S.filterAll)}${tab("archived", S.filterArchived)}</nav>
-</form>
-${threads.length ? join(threads.map(t => threadRow(t, own))) : h`<p class="empty">${S.inboxEmpty}</p>`}`;
+export interface InboxFilter {
+    mailbox: string;
+    status: string;
 }
 
-function threadRow(t: Thread, own: Set<string>): View {
-    return h`<a class="card thread-row" href="/threads/${t.id}">
-  <div class="meta">
-    ${mailboxBadge(t.mailbox)}
-    ${when(t.unread, () => h`<span class="dot" title="${S.unread}"></span>`)}
-    ${when(t.has_draft, () => h`<span class="badge draft">${S.hasDraft}</span>`)}
-    <span>${formatDate(t.last_at)}</span>
-  </div>
-  <div class="subject">${t.subject || "—"}</div>
-  <div class="meta"><span>${t.participants.filter(p => !own.has(p)).join(", ")}</span></div>
+export function inboxQuery(filter: InboxFilter): string {
+    return new URLSearchParams({ status: filter.status, ...(filter.mailbox ? { mailbox: filter.mailbox } : {}) }).toString();
+}
+
+/** The thread list; on a wide screen it stays beside the open thread. */
+export function threadList(threads: Thread[], opts: { mailboxes: string[]; domains: string[]; filter: InboxFilter; own: Set<string>; current: string | null }): View {
+    const { filter } = opts;
+    const tab = (status: string, label: string) =>
+        h`<a class="chip" href="/inbox?${inboxQuery({ ...filter, status })}" ${raw(filter.status === status ? 'aria-current="page"' : "")}>${label}</a>`;
+    return h`<section class="list">
+  <header class="list-head">
+    <h1>${opts.domains.length ? opts.domains.join(" · ") : S.navInbox}</h1>
+    <form class="filters" method="get" action="/inbox">
+      <input type="hidden" name="status" value="${filter.status}">
+      <nav class="chips" aria-label="${S.filter}">${tab("unanswered", S.filterPending)}${tab("all", S.filterAll)}${tab("archived", S.filterArchived)}</nav>
+      ${when(opts.mailboxes.length > 1, () => h`<span class="select"><select name="mailbox" aria-label="${S.allMailboxes}" onchange="this.form.submit()">
+        <option value="">${S.allMailboxes}</option>
+        ${join(opts.mailboxes.map(m => h`<option value="${m}" ${raw(m === filter.mailbox ? "selected" : "")}>${m}</option>`))}
+      </select></span>`)}
+    </form>
+  </header>
+  ${threads.length ? join(threads.map(t => threadRow(t, opts))) : h`<p class="empty">${S.inboxEmpty}</p>`}
+</section>`;
+}
+
+function threadRow(t: Thread, opts: { mailboxes: string[]; filter: InboxFilter; own: Set<string>; current: string | null }): View {
+    const people = t.participants.filter(p => !opts.own.has(p));
+    return h`<a class="row ${t.unread ? "unread" : ""}" href="/threads/${t.id}?${inboxQuery(opts.filter)}" ${raw(t.id === opts.current ? 'aria-current="page"' : "")}>
+  <span class="avatar" aria-hidden="true">${initials(people[0] ?? t.mailbox)}</span>
+  <span class="row-main">
+    <span class="row-top"><span class="who">${people.join(", ") || t.mailbox}</span><time datetime="${t.last_at}">${formatDate(t.last_at)}</time></span>
+    <span class="row-subject">${t.subject || "—"}</span>
+    ${when(t.has_draft || opts.mailboxes.length > 1 || t.unread, () => h`<span class="row-tags">
+      ${when(t.has_draft, () => h`<span class="badge draft">${S.hasDraft}</span>`)}
+      ${when(opts.mailboxes.length > 1, () => mailboxBadge(t.mailbox))}
+      ${when(t.unread, () => h`<span class="dot" title="${S.unread}"></span>`)}
+    </span>`)}
+  </span>
 </a>`;
 }
 
-export function threadPage(thread: Thread, items: View[], ctx: ContextView): View {
-    return h`<h1>${thread.subject || "—"}</h1>
-<div class="meta thread-head">${mailboxBadge(thread.mailbox)}${archiveButton(thread)}</div>
-${contextBlock(ctx)}
-<section class="messages">${join(items)}</section>`;
+/** The thread list and the open thread side by side; a phone shows one of the two. */
+export function inboxPage(list: View, thread: View | null): View {
+    return h`<div class="split ${thread ? "has-thread" : ""}">${list}<section class="pane">${thread ?? ""}</section></div>`;
+}
+
+export interface ThreadEntry {
+    at: string;
+    view: View;
+}
+
+/** The conversation, oldest first, with day separators, a reply box and the context panel. */
+export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextView, opts: { filter: InboxFilter; own: Set<string>; reply: { allowed: boolean; replyAll: boolean } }): View {
+    const query = inboxQuery(opts.filter);
+    const rows = contextRows(ctx);
+    const people = thread.participants.filter(p => !opts.own.has(p));
+    const title = h`<span class="thread-subject">${thread.subject || "—"}</span><span class="thread-meta">${[...people, thread.mailbox].join(" · ")}</span>`;
+    const items: View[] = [];
+    let day = "";
+    for (const entry of entries) {
+        const label = dayLabel(entry.at);
+        if (label !== day) items.push(h`<div class="day">${label}</div>`);
+        day = label;
+        items.push(entry.view);
+    }
+    return h`<div class="thread">
+  <header class="thread-head">
+    <a class="icon-btn back" href="/inbox?${query}" aria-label="${S.back}">${icon("back")}</a>
+    ${rows.length
+        ? h`<button type="button" class="thread-title" data-context-toggle aria-controls="context">${title}</button>`
+        : h`<div class="thread-title">${title}</div>`}
+    ${when(rows.length, () => h`<button type="button" class="context-btn" data-context-toggle aria-controls="context">${S.context}</button>`)}
+    ${archiveButton(thread)}
+  </header>
+  <div class="messages" data-scroll-end>${join(items)}</div>
+  ${when(opts.reply.allowed, () => h`<form class="composer" method="post" action="/threads/${thread.id}/reply?${query}">
+    ${when(opts.reply.replyAll, () => h`<label class="reply-all"><input type="checkbox" name="reply_all" value="1">${S.replyAll}</label>`)}
+    <textarea name="text" rows="1" aria-label="${S.reply}" placeholder="${S.reply}…" required></textarea>
+    <button type="submit" name="action" value="save" class="icon-btn" aria-label="${S.saveDraft}" title="${S.saveDraft}">${icon("drafts")}</button>
+    <button type="submit" name="action" value="send" class="primary send" aria-label="${S.send}" title="${S.send}">${icon("send")}</button>
+  </form>`)}
+  ${when(rows.length, () => h`<aside class="context-panel" id="context" aria-label="${S.context}">
+    <div class="context-head"><h2>${S.context}</h2><button type="button" class="icon-btn" data-context-toggle aria-label="${S.close}">${icon("close")}</button></div>
+    <div class="context-body">${contextSections(rows)}</div>
+  </aside>
+  <div class="context-backdrop" data-context-toggle></div>`)}
+</div>`;
 }
 
 export function archiveButton(thread: Thread): View {
+    const label = thread.archived ? S.unarchive : S.archive;
     return h`<form id="archive" hx-post="/threads/${thread.id}/archive" hx-swap="outerHTML">
   <input type="hidden" name="archived" value="${thread.archived ? "0" : "1"}">
-  <button class="link">${thread.archived ? S.unarchive : S.archive}</button>
+  <button class="icon-btn" aria-label="${label}" title="${label}">${icon(thread.archived ? "unarchive" : "archive")}</button>
 </form>`;
 }
 
 export function devicesPage(sessions: Session[], currentId: string): View {
-    return h`<h1>${S.navDevices}</h1>
+    return h`<div class="page">
+<h1>${S.navDevices}</h1>
 ${sessions.length ? join(sessions.map(s => h`<article class="card" id="session-${s.id}">
   <div class="meta">
     <strong>${s.label ?? s.user_agent ?? S.unknownDevice}</strong>
@@ -311,5 +508,20 @@ ${sessions.length ? join(sessions.map(s => h`<article class="card" id="session-$
     <span>${S.createdBy}: ${s.created_by}</span>
   </div>
   ${when(s.id !== currentId, () => h`<div class="actions"><button class="danger" hx-post="/devices/${s.id}/revoke" hx-target="#session-${s.id}" hx-swap="delete">${S.revoke}</button></div>`)}
-</article>`)) : h`<p class="empty">${S.devicesEmpty}</p>`}`;
+</article>`)) : h`<p class="empty">${S.devicesEmpty}</p>`}
+</div>`;
+}
+
+export function settingsPage(theme: Theme): View {
+    return h`<div class="page">
+<h1>${S.navSettings}</h1>
+<form class="setting" method="post" action="/theme">
+  <label for="theme">${S.theme}</label>
+  <span class="select"><select id="theme" name="theme" onchange="this.form.submit()">
+    ${join((["system", "light", "dark"] as const).map(t =>
+        h`<option value="${t}" ${raw(t === theme ? "selected" : "")}>${{ system: S.themeSystem, light: S.themeLight, dark: S.themeDark }[t]}</option>`))}
+  </select></span>
+</form>
+<form class="setting" method="post" action="/logout"><button class="danger">${S.logout}</button></form>
+</div>`;
 }

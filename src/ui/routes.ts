@@ -2,7 +2,7 @@ import type { Context, Hono } from "hono";
 import { deleteCookie, getCookie, getSignedCookie, setCookie, setSignedCookie } from "hono/cookie";
 import type { Access } from "../auth.ts";
 import { bareAddress, domainOf, splitAddresses } from "../core/address.ts";
-import { ConflictError, InvalidRequestError, type Mail, type MessageView } from "../core/mail.ts";
+import { ConflictError, InvalidRequestError, type Mail, type MessageView, type ThreadStatus } from "../core/mail.ts";
 import { CATCHALL, type Actor, type InboxerConfig, type Message, type Session } from "../types.ts";
 import { S } from "./strings.ts";
 import * as V from "./views.ts";
@@ -47,13 +47,16 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         cc: m.cc.filter(a => !own.has(bareAddress(a))),
     });
 
-    const page = async (c: Context<UiEnv>, title: string, body: V.View, current: V.Page, status: 200 | 401 | 404 = 200) => {
+    /** Mailboxes a session can send from: every one in its scope but the catch-all. */
+    const senders = (session: Session): V.Mailbox[] => mail.listMailboxes(session.scope).filter(m => m.id !== CATCHALL);
+    const domainsOf = (session: Session): string[] => [...new Set(senders(session).map(m => domainOf(m.address)))];
+
+    const page = async (c: Context<UiEnv>, title: string, body: V.View, current: V.Page, status: 200 | 400 | 401 | 404 = 200, fullScreen = false) => {
         const session = c.get("session");
-        const draftCount = session ? (await mail.listDrafts(undefined, session.scope)).length : 0;
-        const domains = session
-            ? [...new Set(mail.listMailboxes(session.scope).filter(m => m.id !== CATCHALL).map(m => domainOf(m.address)))]
-            : [];
-        return c.html(V.layout(title, body, { theme: theme(c), page: current, draftCount, signedIn: !!session, domains }), status);
+        const shell = session
+            ? { draftCount: (await mail.listDrafts(undefined, session.scope)).length, domains: domainsOf(session), senders: senders(session) }
+            : {};
+        return c.html(V.layout(title, body, { theme: theme(c), page: current, signedIn: !!session, fullScreen, ...shell }), status);
     };
 
     // Sign-in: GET only shows a button, so link previews and scanners do not burn the link.
@@ -86,7 +89,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         return c.redirect(path, 303);
     });
 
-    const ui = ["/", "/inbox", "/threads/*", "/drafts/*", "/attachments/*", "/devices", "/devices/*", "/logout"];
+    const ui = ["/", "/inbox", "/threads/*", "/drafts/*", "/attachments/*", "/compose", "/devices", "/devices/*", "/settings", "/logout"];
     for (const path of ui) {
         app.use(path, async (c, next) => {
             const value = await getSignedCookie(c, secret, SESSION_COOKIE);
@@ -196,29 +199,79 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         });
     }
 
-    app.get("/inbox", async c => {
-        const mailbox = c.req.query("mailbox") ?? "";
+    /** The inbox filter from the query, carried along when a thread opens beside the list. */
+    const inboxFilter = (c: Context<UiEnv>): V.InboxFilter => {
         const requested = c.req.query("status");
         const status = requested === "all" || requested === "archived" ? requested : "unanswered";
-        const scope = c.get("session").scope;
-        const threads = await mail.listThreads({ mailbox: mailbox || undefined, status, limit: 200 }, scope);
-        const mailboxes = mail.listMailboxes(scope);
-        const own = new Set(mailboxes.map(m => bareAddress(m.address)));
-        return page(c, S.navInbox, V.inboxPage(threads, mailboxes.map(m => m.id), { mailbox, status }, own), "inbox");
-    });
+        return { mailbox: c.req.query("mailbox") ?? "", status };
+    };
+
+    const threadList = async (c: Context<UiEnv>, current: string | null): Promise<V.View> => {
+        const session = c.get("session");
+        const filter = inboxFilter(c);
+        const threads = await mail.listThreads({ mailbox: filter.mailbox || undefined, status: filter.status as ThreadStatus, limit: 200 }, session.scope);
+        const mailboxes = mail.listMailboxes(session.scope).map(m => m.id);
+        return V.threadList(threads, { mailboxes, domains: domainsOf(session), filter, own, current });
+    };
+
+    app.get("/inbox", async c => page(c, S.navInbox, V.inboxPage(await threadList(c, null), null), "inbox"));
 
     app.get("/threads/:id", async c => {
         const id = c.req.param("id");
-        const scope = c.get("session").scope;
-        let thread = await mail.requireThread(id, scope);
+        const session = c.get("session");
+        let thread = await mail.requireThread(id, session.scope);
         if (thread.unread) {
-            await mail.mark([id], { read: true }, uiActor(c.get("session")));
-            thread = await mail.requireThread(id, scope);
+            await mail.mark([id], { read: true }, uiActor(session));
+            thread = await mail.requireThread(id, session.scope);
         }
-        const { messages, context, contacts } = await mail.getThread(id, scope);
-        const items = await Promise.all([...messages].reverse().map(async m =>
-            m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id), [], null) : V.messageCard(shown(m))));
-        return page(c, thread.subject || S.navInbox, V.threadPage(thread, items, { context, contacts }), "inbox");
+        const { messages, context, contacts } = await mail.getThread(id, session.scope);
+        const people = thread.participants.filter(p => !own.has(p));
+        const entries = await Promise.all(messages.map(async m => ({
+            at: m.date,
+            view: m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id), [], null) : V.messageBubble(shown(m), people.length > 1),
+        })));
+        const reply = { allowed: senders(session).some(m => m.id === thread.mailbox), replyAll: people.length > 1 };
+        const view = V.threadView(thread, entries, { context, contacts }, { filter: inboxFilter(c), own, reply });
+        return page(c, thread.subject || S.navInbox, V.inboxPage(await threadList(c, id), view), "inbox", 200, true);
+    });
+
+    /** Replies to the latest message; a reply sent from here gets the same undo window as a draft. */
+    app.post("/threads/:id/reply", async c => {
+        const id = c.req.param("id");
+        const actor = uiActor(c.get("session"));
+        const body = await c.req.parseBody();
+        const text = String(body.text ?? "");
+        const { messages } = await mail.getThread(id, actor.scope);
+        const latest = messages.filter(m => m.status !== "draft").at(-1);
+        const back = `/threads/${id}?${V.inboxQuery(inboxFilter(c))}`;
+        if (!latest || !text.trim()) return c.redirect(back, 303);
+        try {
+            const draft = await mail.createDraft({ replyToId: latest.id, replyAll: body.reply_all === "1", text }, actor);
+            if (body.action === "send") await mail.schedule(draft.id, "send", actor);
+        } catch (err) {
+            if (err instanceof InvalidRequestError) return page(c, S.reply, V.message([err.message]), "inbox", 400);
+            throw err;
+        }
+        return c.redirect(back, 303);
+    });
+
+    app.post("/compose", async c => {
+        const actor = uiActor(c.get("session"));
+        const body = await c.req.parseBody();
+        try {
+            const draft = await mail.createDraft({
+                mailbox: String(body.mailbox ?? ""),
+                to: splitAddresses(String(body.to ?? "")),
+                cc: splitAddresses(String(body.cc ?? "")),
+                subject: String(body.subject ?? ""),
+                text: String(body.text ?? ""),
+            }, actor);
+            if (body.action === "send") await mail.schedule(draft.id, "send", actor);
+            return c.redirect(`/threads/${draft.thread_id}?status=all`, 303);
+        } catch (err) {
+            if (err instanceof InvalidRequestError) return page(c, S.newMail, V.message([err.message]), null, 400);
+            throw err;
+        }
     });
 
     app.post("/threads/:id/archive", async c => {
@@ -245,6 +298,8 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const session = c.get("session");
         return page(c, S.navDevices, V.devicesPage(await access.listSessions(session.scope), session.id), "devices");
     });
+
+    app.get("/settings", async c => page(c, S.navSettings, V.settingsPage(theme(c)), "settings"));
 
     app.post("/devices/:id/revoke", async c => {
         await access.revokeSession(c.req.param("id"), uiActor(c.get("session")));
