@@ -257,7 +257,7 @@ dialog.sheet form { position: relative; height: 100%; display: flex; flex-direct
 .grabber { width: 40px; height: 5px; border-radius: 999px; background: var(--line); margin: 8px auto 9px; flex: none; }
 .sheet-close { position: absolute; top: 8px; right: 8px; color: var(--muted); z-index: 1; }
 dialog.sheet .field { padding: 0 16px; }
-dialog.sheet .field.compact { padding-right: 60px; }
+dialog.sheet .field.compact { padding-right: 60px; margin-top: 12px; }
 dialog.sheet .field output { font-family: var(--mono); font-size: .8rem; padding: 10px 0; }
 dialog.sheet textarea { flex: 1; min-height: 0; margin: 0; padding: 12px 16px; resize: none; }
 .sheet-actions {

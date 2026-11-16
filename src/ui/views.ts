@@ -142,7 +142,7 @@ function composeDialog(senders: Mailbox[]): View {
         ? h`<span class="select"><select id="compose-from" name="mailbox">${join(senders.map(m => h`<option value="${m.id}">${m.address}</option>`))}</select></span>`
         : h`<input type="hidden" name="mailbox" value="${senders[0]!.id}"><output id="compose-from">${senders[0]!.address}</output>`;
     return h`<dialog class="sheet" id="compose" aria-label="${S.newMail}">${mailForm("compose", "/compose", {
-        head: h`<div class="field compact"><label for="compose-from">${S.from}</label>${from}</div>`, to: "", cc: "", subject: "", text: "",
+        head: h`<div class="field compact"><label for="compose-from">${S.from}</label>${from}</div>`, headIsRow: true, to: "", cc: "", subject: "", text: "",
     })}</dialog>`;
 }
 
@@ -150,17 +150,17 @@ function composeDialog(senders: Mailbox[]): View {
 export function replyForm(threadId: string, query: string, replyToId: string, fields: { to: string; cc: string; subject: string; text: string }): View {
     return mailForm("reply", `/threads/${threadId}/reply/full?${query}`, {
         ...fields,
-        head: h`<input type="hidden" name="reply_to_id" value="${replyToId}"><div class="sheet-head"></div>`,
+        head: h`<input type="hidden" name="reply_to_id" value="${replyToId}">`,
     });
 }
 
-/** New mail and the full reply: recipients, subject, body and files, saved or sent in one post. */
-function mailForm(id: string, action: string, f: { head: View; to: string; cc: string; subject: string; text: string }): View {
+/** New mail and the full reply: recipients, subject, body and files, saved or sent in one post. `head` is either a row or only hidden fields. */
+function mailForm(id: string, action: string, f: { head: View; headIsRow?: boolean; to: string; cc: string; subject: string; text: string }): View {
     return h`<form method="post" action="${action}" enctype="multipart/form-data" data-drop>
     <div class="grabber" aria-hidden="true"></div>
     <button type="button" class="icon-btn sheet-close" data-close aria-label="${S.close}">${icon("close")}</button>
     ${f.head}
-    <div class="field">
+    <div class="field ${f.headIsRow ? "" : "compact"}">
       <label for="${id}-to">${S.to}</label>
       <input id="${id}-to" name="to" value="${f.to}" autocomplete="off" required>
       ${when(!f.cc, () => h`<button type="button" class="link" onclick="this.remove();var r=document.getElementById('${id}-cc-row');r.hidden=false;r.querySelector('input').focus()">${S.cc}</button>`)}
