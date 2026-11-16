@@ -11,9 +11,6 @@
       "default": "./dist/index.js"
     }
   },
-  "bin": {
-    "inboxer-login-link": "./dist/bin/login-link.js"
-  },
   "files": [
     "dist",
     "src",
@@ -73,7 +70,6 @@
   "dependencies": {
     "@hono/node-server": "^2.1.8",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "configre": "^2.1.9",
     "deepbase": "^4.0.0",
     "deepbase-sqlite": "^4.0.0",
     "hono": "^4.13.18",

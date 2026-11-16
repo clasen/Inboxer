@@ -55,6 +55,28 @@ export function createInboxer(cfg: InboxerConfig, options: InboxerOptions = {}):
     };
 }
 
+export interface LoginLinkOptions {
+    /** Shown in the device list, e.g. "Ana's phone". */
+    label?: string;
+    /** Thread to open after signing in. */
+    threadId?: string;
+}
+
+/**
+ * One-time login link for the review UI, minted from a script on the server without an MCP client.
+ * Opens the database, stores the link and closes it; the session it creates reaches every mailbox.
+ */
+export async function createLoginLink(cfg: InboxerConfig, options: LoginLinkOptions = {}): Promise<{ url: string; expires_at: string }> {
+    assertConfig(cfg, { requireProvider: false });
+    const store = new Store(cfg.dataDir);
+    await store.connect();
+    try {
+        return await new Access(store, cfg).createLoginLink({ kind: "cli", name: "cli", scope: null }, options.label ?? null, options.threadId ?? null);
+    } finally {
+        await store.close();
+    }
+}
+
 export { WebhookSignatureError } from "./provider/types.ts";
 export type {
     DeliveryStatus,

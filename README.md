@@ -32,8 +32,10 @@ Inboxer handles storage, threading and delivery. The decisions belong to whoever
 Requires **Node.js 22.16 or later**, or **Bun**.
 
 ```bash
-npm install inboxer configre
+npm install inboxer
 ```
+
+`createInboxer` takes a plain config object, so load it however your project does. The examples use [Configre](https://github.com/clasen/Configre) (`npm install configre`), which merges a public and a secret file and keeps the secrets encrypted in Git.
 
 Create `config/index.cjs` with the public settings:
 
@@ -53,7 +55,7 @@ module.exports = {
 };
 ```
 
-Put the secrets in `config/index.secret.cjs`. [Configre](https://github.com/clasen/Configre) merges them over the public file and keeps them encrypted in Git:
+Put the secrets in `config/index.secret.cjs`; Configre merges them over the public file:
 
 ```javascript
 module.exports = {
@@ -114,6 +116,8 @@ Everything lives under one origin:
 The function is synchronous, so a host that needs a synchronous factory can call it directly. Requests wait for `ready` before they are handled.
 
 `options.provider` takes a provider instance instead of resolving `cfg.provider.type`. See [Providers](#providers).
+
+`createLoginLink(cfg, { label?, threadId? })` mints a one-time login link from a script on the server. See [Signing in](#signing-in).
 
 ### As a roster-server site
 
@@ -321,13 +325,23 @@ The theme follows the system setting, with a System / Light / Dark switch stored
 
 Each link creates one independent session. Revoking a phone does not sign out a laptop. A session reaches the mailboxes of the token that created its link; **Devices** shows them on each session that is limited.
 
-If you have no MCP client at hand, mint a link on the server:
+If you have no MCP client at hand, mint a link from a script on the server, with the same config the app uses:
 
-```bash
-npx inboxer-login-link ./config "my phone"
+```javascript
+// login-link.mjs
+import Configre from "configre";
+import { join } from "node:path";
+import { createLoginLink } from "inboxer";
+
+const { url } = await createLoginLink(Configre(join(import.meta.dirname, "config")), { label: process.argv[2] });
+console.log(url);
 ```
 
-Pass `--config=<profile>` to select a Configre profile.
+```bash
+node login-link.mjs "my phone"
+```
+
+`threadId` lands the browser on that thread after signing in. The session reaches every mailbox.
 
 ## Data
 

@@ -12,7 +12,7 @@ Inboxer stores every inbound and outbound email in one SQLite file, exposes MCP 
 
 ## Set up
 
-Install with `npm install inboxer configre`; requires Node.js 22.16+ or Bun.
+Install with `npm install inboxer`; requires Node.js 22.16+ or Bun. `createInboxer` takes a plain object; the examples load it with Configre (`npm install configre`), which merges `index.cjs` and `index.secret.cjs`.
 
 `config/index.cjs` (public):
 
@@ -127,4 +127,4 @@ Context:
 
 ## Give a human access to the UI
 
-Call `create_login_link({ label: "Ana's phone" })` and hand the returned URL to the person; add `thread_id` to land on that thread after signing in. It works once, expires after `ui.loginLinkTtlMin` minutes if unused, and signs in one browser for good. `list_sessions` and `revoke_session({ id })` manage devices. Without MCP, run `npx inboxer-login-link ./config "label"` on the server.
+Call `create_login_link({ label: "Ana's phone" })` and hand the returned URL to the person; add `thread_id` to land on that thread after signing in. It works once, expires after `ui.loginLinkTtlMin` minutes if unused, and signs in one browser for good. `list_sessions` and `revoke_session({ id })` manage devices. Without MCP, call `createLoginLink(cfg, { label, threadId? })` (exported by `inboxer`) from a script on the server with the app's config; it returns `{ url, expires_at }`.

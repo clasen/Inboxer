@@ -4,7 +4,8 @@ import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { FEEDBACK_TOKEN, startHarness, TOKEN, webhook, type Harness } from "./helpers.ts";
+import { createLoginLink } from "../src/index.ts";
+import { FEEDBACK_TOKEN, startHarness, TOKEN, testConfig, webhook, type Harness } from "./helpers.ts";
 
 const BASE = "http://localhost";
 const NativeResponse = globalThis.Response;
@@ -143,6 +144,21 @@ describe("http", () => {
         assert.equal(res.status, 303);
         assert.equal(res.headers.get("location"), `/threads/${thread.id}`);
         assert.equal((await req(h, `/threads/${thread.id}`, { cookie: sessionCookie(res) })).status, 200);
+    });
+
+    test("createLoginLink mints a link from a script, without an MCP client", async () => {
+        h.provider.addInbound({ providerId: "q" });
+        await webhook(h, [{ type: "received", providerId: "q" }]);
+        const client = await mcpClient(h);
+        const [thread] = (await call(client, "list_threads")).data;
+
+        const link = await createLoginLink(testConfig(h.dataDir), { label: "server", threadId: thread.id });
+        assert.ok(link.url.startsWith("http://localhost:4000/auth/"));
+        const res = await req(h, new URL(link.url).pathname, { method: "POST" });
+        assert.equal(res.headers.get("location"), `/threads/${thread.id}`);
+        const { data: sessions } = await call(client, "list_sessions");
+        assert.deepEqual(sessions.map((s: { label: string; scope: unknown }) => [s.label, s.scope]), [["server", null]]);
+        await client.close();
     });
 
     test("the UI needs a session; sessions are independent and revocable", async () => {

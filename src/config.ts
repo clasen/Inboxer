@@ -23,7 +23,7 @@ function requirePositive(value: unknown, path: string): void {
     if (typeof value !== "number" || !(value > 0)) fail(path, "a positive number");
 }
 
-/** Asserts the shape `createInboxer` relies on. Configre merges public and secret files before this runs. */
+/** Asserts the shape `createInboxer` relies on. */
 export function assertConfig(cfg: InboxerConfig, { requireProvider }: { requireProvider: boolean }): void {
     requireString(cfg.publicUrl, "publicUrl");
     requireString(cfg.dataDir, "dataDir");
