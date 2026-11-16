@@ -381,6 +381,7 @@ select:hover, select:focus { border-color: var(--focus); outline: none; }
     font-family: var(--mono); font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
 }
 .field input { flex: 1; min-width: 0; border: none; background: none; padding: 11px 0; font: inherit; color: var(--fg); outline: none; }
+.field select { height: auto; padding: 11px 30px 11px 0; border: none; border-radius: 0; font-size: inherit; }
 .field:focus-within { border-bottom-color: var(--focus); }
 .field .link { font-family: var(--mono); font-size: .72rem; }
 textarea {

@@ -11,6 +11,8 @@ Inboxer has no business rules. It does not decide what to answer or when. Each c
 - **No passwords.** The UI uses one-time login links that an agent requests through MCP. Every link signs in one browser.
 - **Runs on Node.js and Bun.** It works standalone or as a [roster-server](https://github.com/clasen/RosterServer) site.
 
+![A thread in the review UI on desktop](docs/screenshots/desktop-thread-dark.png)
+
 ## Use cases
 
 Inboxer handles storage, threading and delivery. The decisions belong to whoever calls the tools, so the same instance can serve very different workflows.
@@ -295,13 +297,25 @@ Every thread, message and draft in a result carries a `url` that opens it in the
 
 The UI is server-rendered with Hono and htmx, without a front-end build, and works on a phone.
 
-- **Drafts:** mailbox, recipient, the agent's note and the thread underneath, newest first, with Edit, Send and Discard. Send and Discard happen after `ui.undoSec` seconds, with an Undo button meanwhile; the wait runs on the server, so closing the tab does not cancel it and a restart resumes it. Agents cannot change a draft during that window.
-- **Editing:** To, Cc, Subject and a plain-text body, with Save and Save & Send. Attach files with the Attach button or by dropping them on the editor; they go out with the message. HTML is generated from the text at send time, with the mailbox signature. If the agent changed the draft while you were editing, saving shows both versions instead of overwriting. Your edits mark the draft `edited_by_human`, so agents leave it alone.
-- **Inbox:** threads per mailbox, filtered by mailbox and by unanswered, all or archived.
-- **Thread:** messages newest first, as plain text, with the context agents stored for the thread and its participants. Incoming HTML is never rendered. Images, embedded ones included, show as thumbnails under the message and other attachments as file links. Only common image types and PDFs open in the browser, sandboxed; everything else downloads.
+<p>
+  <img src="docs/screenshots/mobile-inbox-dark.png" width="24%" alt="Inbox on a phone">
+  <img src="docs/screenshots/mobile-thread-dark.png" width="24%" alt="A thread with a pending draft">
+  <img src="docs/screenshots/mobile-context-dark.png" width="24%" alt="The context sheet">
+  <img src="docs/screenshots/mobile-compose-dark.png" width="24%" alt="New mail">
+</p>
+
+- **Drafts:** pending drafts newest first, with mailbox, recipient and who wrote them. Opening one shows it at the end of its thread with the agent's note, Edit, Send and Discard. Send and Discard happen after `ui.undoSec` seconds, with an Undo button meanwhile; the wait runs on the server, so closing the tab does not cancel it and a restart resumes it. Agents cannot change a draft during that window.
+- **Editing:** Edit opens the draft in a sheet with To, Cc, Subject and a plain-text body, and Save or Save & Send. Attach files with the paperclip or by dropping them on the sheet; they go out with the message. HTML is generated from the text at send time, with the mailbox signature. If the agent changed the draft while you were editing, saving shows both versions instead of overwriting. Your edits mark the draft `edited_by_human`, so agents leave it alone.
+- **Inbox:** threads per mailbox, filtered by mailbox and by pending (unanswered), all or archived.
+- **Thread:** messages oldest to newest as chat bubbles, yours on one side and theirs on the other, as plain text. Incoming HTML is never rendered. Images, embedded ones included, show as thumbnails under the message and other attachments as file links. Only common image types and PDFs open in the browser, sandboxed; everything else downloads. **Context** shows what agents stored for the thread and its participants.
+- **Replying:** the box under the thread sends a quick reply, to the sender or to everyone. The **+** button opens the full reply, with Cc, Subject and attachments. **New mail** starts a conversation from any mailbox you can send from.
 - **Devices:** the browsers signed in, each with a Revoke button.
 
-The theme follows the system setting, with a System / Light / Dark switch stored in a cookie. Every UI string lives in `src/ui/strings.ts`.
+On a phone, navigation moves to a bottom tab bar and editors open as bottom sheets.
+
+![The context panel in the light theme](docs/screenshots/desktop-context-light.png)
+
+The theme follows the system setting; **Settings** has a System / Light / Dark switch stored in a cookie, and Log out. Every UI string lives in `src/ui/strings.ts`.
 
 ### Signing in
 
@@ -362,6 +376,7 @@ npx skills add https://github.com/clasen/Inboxer --skill inboxer
 npm test          # Node.js test runner
 npm run test:bun  # the same suite under Bun
 npm run build     # compiles to dist/
+npm run preview   # the review UI on dummy data, nothing is sent
 ```
 
 ## License
