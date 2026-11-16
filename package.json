@@ -24,7 +24,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test 'test/**/*.test.ts'",
     "test:bun": "bun test test",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "preview": "node scripts/preview.ts"
   },
   "keywords": [
     "email",
