@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { ConflictError, InvalidRequestError } from "../src/core/mail.ts";
+import { ConflictError, InvalidRequestError, Mail } from "../src/core/mail.ts";
 import { assertConfig, mcpTokens } from "../src/config.ts";
 import { NotFoundError } from "../src/store.ts";
 import { CATCHALL } from "../src/types.ts";
@@ -243,5 +243,65 @@ describe("mail core", () => {
         cfg.mailboxes.support!.tokens = { "feedback-bot": cfg.mailboxes.feedback!.tokens!["feedback-bot"]! };
         assert.deepEqual(mcpTokens(cfg).find(t => t.name === "feedback-bot")?.scope, ["support", "feedback"]);
         assert.equal(mcpTokens(cfg).find(t => t.name === "agent")?.scope, null);
+    });
+
+    test("a human's send waits for the undo window, survives a restart, and undo cancels it", async () => {
+        const wait = () => new Promise(resolve => setTimeout(resolve, 120));
+        const send = await h.mail.createDraft({ mailbox: "support", to: ["ana@customer.test"], subject: "Hi", text: "one" }, agent);
+        const drop = await h.mail.createDraft({ mailbox: "support", to: ["bob@other.test"], subject: "Hi", text: "two" }, agent);
+
+        await h.mail.schedule(drop.id, "discard", human);
+        await h.mail.undo(drop.id, human);
+        await h.mail.schedule(send.id, "send", human);
+        h.mail.stopPending();
+        await wait();
+        assert.equal(h.provider.sent.length, 0, "nothing runs while the process is down");
+
+        const restarted = new Mail(h.store, h.provider, testConfig("/tmp/unused"));
+        await restarted.resumePending();
+        await wait();
+        restarted.stopPending();
+        assert.equal(h.provider.sent.length, 1);
+        assert.equal((await h.store.requireMessage(send.id)).status, "sent");
+        const kept = await h.store.requireMessage(drop.id);
+        assert.equal(kept.status, "draft");
+        assert.equal(kept.pending, null);
+        assert.ok((await h.store.auditEntries()).some(e => e.action === "send" && e.actor === "ui:phone"));
+    });
+
+    test("attachments are copied to disk at ingest and served from there; a failed copy retries on first read", async () => {
+        h.provider.addInbound({ providerId: "a", attachments: [
+            { id: "img", filename: "photo.png", content_type: "image/png", size: 3, inline: true, content_id: "ii_1" },
+            { id: "doc", filename: "terms.pdf", content_type: "application/pdf", size: 4, inline: false, content_id: null },
+        ] });
+        h.provider.files.set("a/img", new Uint8Array([1, 2, 3]));
+        const id = await h.mail.ingest("a");
+        assert.equal(h.provider.downloads, 2, "the missing PDF was attempted too");
+
+        const image = await h.mail.getAttachment(id, "img", null);
+        assert.deepEqual([...image.body], [1, 2, 3]);
+        assert.equal(image.meta.inline, true);
+        assert.equal(h.provider.downloads, 2, "served from disk");
+
+        h.provider.files.set("a/doc", new Uint8Array([4, 5, 6, 7]));
+        assert.equal((await h.mail.getAttachment(id, "doc", null)).body.byteLength, 4);
+        assert.equal(h.provider.downloads, 3);
+        await assert.rejects(h.mail.getAttachment(id, "img", ["feedback"]), NotFoundError);
+        await assert.rejects(h.mail.getAttachment(id, "missing", null), NotFoundError);
+    });
+
+    test("files attached to a draft go out with it; detaching removes them", async () => {
+        const draft = await h.mail.createDraft({ mailbox: "support", to: ["ana@customer.test"], subject: "Docs", text: "attached" }, agent);
+        await h.mail.attach(draft.id, { filename: "a.txt", contentType: "text/plain", body: new TextEncoder().encode("A") }, human);
+        const withTwo = await h.mail.attach(draft.id, { filename: "b.bin", contentType: "", body: new Uint8Array([9]) }, human);
+        assert.equal(withTwo.version, draft.version, "attaching never conflicts with text edits");
+        assert.equal(withTwo.attachments[1]!.content_type, "application/octet-stream");
+        await h.mail.detach(draft.id, withTwo.attachments[1]!.id, human);
+        assert.deepEqual([...(await h.mail.getAttachment(draft.id, withTwo.attachments[0]!.id, null)).body], [65]);
+
+        await h.mail.sendDraft(draft.id, human);
+        const sent = h.provider.sent[0]!.message.attachments;
+        assert.deepEqual(sent.map(a => [a.filename, a.contentType, [...a.content]]), [["a.txt", "text/plain", [65]]]);
+        await assert.rejects(h.mail.attach(draft.id, { filename: "c", contentType: "text/plain", body: new Uint8Array() }, human), InvalidRequestError);
     });
 });

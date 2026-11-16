@@ -43,6 +43,8 @@ interface ResendAttachment {
     filename: string;
     content_type: string;
     size?: number;
+    content_id?: string | null;
+    content_disposition?: string | null;
 }
 
 interface ResendReceivedEmail {
@@ -181,22 +183,39 @@ export function createResendProvider(config: Record<string, unknown>): MailProvi
             if (message.cc.length) body.cc = message.cc;
             if (message.bcc.length) body.bcc = message.bcc;
             if (message.replyTo.length) body.reply_to = message.replyTo;
+            if (message.attachments.length) {
+                body.attachments = message.attachments.map(a => ({
+                    filename: a.filename,
+                    content: Buffer.from(a.content).toString("base64"),
+                    content_type: a.contentType,
+                }));
+            }
             const res = await request<{ id: string }>("POST", "/emails", body, { "Idempotency-Key": idempotencyKey });
             return { providerId: res.id };
         },
 
-        async getAttachmentUrl(providerMessageId: string, attachmentId: string): Promise<string> {
-            const res = await request<{ download_url: string }>(
+        async getAttachment(providerMessageId: string, attachmentId: string): Promise<Uint8Array> {
+            const { download_url } = await request<{ download_url: string }>(
                 "GET",
                 `/emails/receiving/${encodeURIComponent(providerMessageId)}/attachments/${encodeURIComponent(attachmentId)}`,
             );
-            return res.download_url;
+            const res = await fetch(download_url);
+            if (!res.ok) throw new Error(`Resend attachment ${attachmentId} download failed: ${res.status}`);
+            return new Uint8Array(await res.arrayBuffer());
         },
     };
 }
 
 function toAttachmentMeta(a: ResendAttachment): AttachmentMeta {
-    return { id: a.id, filename: a.filename, content_type: a.content_type, size: a.size ?? null };
+    const contentId = a.content_id ? a.content_id.replace(/^<|>$/g, "") : null;
+    return {
+        id: a.id,
+        filename: a.filename,
+        content_type: a.content_type,
+        size: a.size ?? null,
+        inline: a.content_disposition === "inline" && !!contentId,
+        content_id: contentId,
+    };
 }
 
 function normalizeHeaders(headers: Record<string, string | string[]>): Record<string, string> {

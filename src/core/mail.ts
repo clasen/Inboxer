@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { DeliveryStatus, MailProvider, ProviderEvent } from "../provider/types.ts";
 import { reaches } from "../config.ts";
 import { NotFoundError, nid, type Store } from "../store.ts";
-import { CATCHALL, type Actor, type Contact, type Context, type InboxerConfig, type MailboxConfig, type Message, type MetaValue, type Scope, type Thread } from "../types.ts";
+import { CATCHALL, type Actor, type Contact, type Context, type AttachmentMeta, type InboxerConfig, type MailboxConfig, type Message, type MetaValue, type PendingAction, type Scope, type Thread } from "../types.ts";
+import { AttachmentFiles } from "./attachments.ts";
 import { bareAddress, domainOf, formatAddress } from "./address.ts";
 import { mergeContext, metaMatches, type ContextPatch } from "./context.ts";
 import { htmlToText, replySubject, textToHtml, tokenize } from "./text.ts";
@@ -97,12 +98,15 @@ export class Mail {
     readonly provider: MailProvider;
     readonly cfg: InboxerConfig;
     private readonly ownAddresses: Set<string>;
+    private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+    private readonly files: AttachmentFiles;
 
     constructor(store: Store, provider: MailProvider, cfg: InboxerConfig) {
         this.store = store;
         this.provider = provider;
         this.cfg = cfg;
         this.ownAddresses = new Set(Object.values(cfg.mailboxes).map(m => bareAddress(m.address)));
+        this.files = new AttachmentFiles(cfg.dataDir);
     }
 
     listMailboxes(scope: Scope): { id: string; address: string; name: string }[] {
@@ -151,12 +155,24 @@ export class Mail {
 
     // Inbound
 
-    /** Stores an inbound message once per provider id and returns its id. */
+    /**
+     * Stores an inbound message once per provider id and returns its id. Attachments are copied to
+     * disk right away; one that fails to download is fetched again the first time it is opened.
+     */
     async ingest(providerId: string): Promise<string> {
         const known = await this.store.lookupProviderId(this.provider.name, providerId);
         if (known) return known;
         const inbound = await this.provider.getInbound(providerId);
+        const id = await this.storeInbound(providerId, inbound);
+        const message = await this.store.requireMessage(id);
+        for (const meta of message.attachments) {
+            await this.attachmentBody(message, meta).catch(err =>
+                console.error(`inboxer: attachment ${meta.id} of message ${id} not stored`, err));
+        }
+        return id;
+    }
 
+    private storeInbound(providerId: string, inbound: Awaited<ReturnType<MailProvider["getInbound"]>>): Promise<string> {
         return this.store.serialize(async () => {
             const existing = await this.store.lookupProviderId(this.provider.name, providerId);
             if (existing) return existing;
@@ -206,6 +222,7 @@ export class Mail {
                 sent_at: null,
                 version: 1,
                 edited_by_human: false,
+                pending: null,
             };
             await this.store.putMessage(message);
             await this.store.indexProviderId(this.provider.name, inbound.providerId, message.id);
@@ -457,6 +474,7 @@ export class Mail {
             sent_at: null,
             version: 1,
             edited_by_human: actor.kind === "ui",
+            pending: null,
         };
         await this.store.putMessage(draft);
         await this.store.setDraft(draft.id, true);
@@ -479,6 +497,7 @@ export class Mail {
         return this.store.serialize(async () => {
             const draft = await this.requireDraft(id, actor.scope);
             if (draft.version !== version) throw new ConflictError(draft);
+            if (draft.pending) throw new InvalidRequestError(`Draft ${id} is about to ${draft.pending.action}; undo it first`);
             if (actor.kind !== "ui" && draft.edited_by_human && !force) {
                 throw new InvalidRequestError(`Draft ${id} was edited by a human; pass force to overwrite it`);
             }
@@ -497,13 +516,117 @@ export class Mail {
     }
 
     discardDraft(id: string, actor: Actor): Promise<void> {
+        return this.store.serialize(() => this.discardDraftUnlocked(id, actor));
+    }
+
+    private async discardDraftUnlocked(id: string, actor: Actor): Promise<void> {
+        const draft = await this.requireDraft(id, actor.scope);
+        draft.status = "discarded";
+        draft.pending = null;
+        await this.store.putMessage(draft);
+        await this.store.setDraft(id, false);
+        await refreshThread(this.store, draft.thread_id);
+        await this.store.audit("draft.discard", actor, id);
+    }
+
+    /** Attaching does not change `version`: it never conflicts with text edits in flight. */
+    attach(id: string, file: { filename: string; contentType: string; body: Uint8Array }, actor: Actor): Promise<Message> {
         return this.store.serialize(async () => {
             const draft = await this.requireDraft(id, actor.scope);
-            draft.status = "discarded";
+            if (draft.pending) throw new InvalidRequestError(`Draft ${id} is about to ${draft.pending.action}; undo it first`);
+            const meta: AttachmentMeta = {
+                id: nid(),
+                filename: file.filename,
+                content_type: file.contentType || "application/octet-stream",
+                size: file.body.byteLength,
+                inline: false,
+                content_id: null,
+            };
+            await this.files.write(draft.id, meta.id, file.body);
+            draft.attachments.push(meta);
             await this.store.putMessage(draft);
-            await this.store.setDraft(id, false);
-            await refreshThread(this.store, draft.thread_id);
-            await this.store.audit("draft.discard", actor, id);
+            await this.store.audit("draft.attach", actor, id, { filename: meta.filename, size: meta.size });
+            return draft;
+        });
+    }
+
+    detach(id: string, attachmentId: string, actor: Actor): Promise<Message> {
+        return this.store.serialize(async () => {
+            const draft = await this.requireDraft(id, actor.scope);
+            if (draft.pending) throw new InvalidRequestError(`Draft ${id} is about to ${draft.pending.action}; undo it first`);
+            const index = draft.attachments.findIndex(a => a.id === attachmentId);
+            if (index < 0) throw new NotFoundError(`Attachment ${attachmentId} not found in draft ${id}`);
+            const [removed] = draft.attachments.splice(index, 1);
+            await this.store.putMessage(draft);
+            await this.store.audit("draft.detach", actor, id, { filename: removed!.filename });
+            return draft;
+        });
+    }
+
+    // Undo window: a human's send or discard waits `ui.undoSec` and survives a restart.
+
+    /** Starts the undo window for a send or discard. Calling it again keeps the first one. */
+    schedule(id: string, action: PendingAction["action"], actor: Actor): Promise<Message> {
+        return this.store.serialize(async () => {
+            const draft = await this.requireDraft(id, actor.scope);
+            if (!draft.pending) {
+                draft.pending = { action, at: new Date(Date.now() + this.cfg.ui.undoSec * 1000).toISOString(), by: actor.name };
+                await this.store.putMessage(draft);
+                await this.store.audit("draft.schedule", actor, id, { action });
+            }
+            this.arm(draft);
+            return draft;
+        });
+    }
+
+    undo(id: string, actor: Actor): Promise<Message> {
+        return this.store.serialize(async () => {
+            const draft = await this.requireDraft(id, actor.scope);
+            clearTimeout(this.timers.get(id));
+            this.timers.delete(id);
+            if (draft.pending) {
+                const { action } = draft.pending;
+                draft.pending = null;
+                await this.store.putMessage(draft);
+                await this.store.audit("draft.undo", actor, id, { action });
+            }
+            return draft;
+        });
+    }
+
+    /** Re-arms undo windows left by a previous process; overdue ones run now. */
+    async resumePending(): Promise<void> {
+        for (const id of await this.store.draftIds()) {
+            const draft = await this.store.requireMessage(id);
+            if (draft.pending) this.arm(draft);
+        }
+    }
+
+    stopPending(): void {
+        for (const timer of this.timers.values()) clearTimeout(timer);
+        this.timers.clear();
+    }
+
+    private arm(draft: Message): void {
+        clearTimeout(this.timers.get(draft.id));
+        const delay = Math.max(0, Date.parse(draft.pending!.at) - Date.now());
+        this.timers.set(draft.id, setTimeout(() => {
+            this.runPending(draft.id).catch(err => console.error(`inboxer: pending action on draft ${draft.id} failed`, err));
+        }, delay));
+    }
+
+    /** A failed send leaves a plain pending draft, so the reviewer sees it was not sent. */
+    private runPending(id: string): Promise<void> {
+        this.timers.delete(id);
+        return this.store.serialize(async () => {
+            const draft = await this.store.getMessage(id);
+            if (!draft || draft.status !== "draft" || !draft.pending) return;
+            const { action, by } = draft.pending;
+            const actor: Actor = { kind: "ui", name: by, scope: null };
+            draft.pending = null;
+            await this.store.putMessage(draft);
+            if (action === "send") await this.sendDraftUnlocked(id, actor);
+            else await this.discardDraftUnlocked(id, actor);
         });
     }
 
@@ -526,6 +649,11 @@ export class Mail {
         if (draft.in_reply_to) headers["In-Reply-To"] = draft.in_reply_to;
         if (draft.references.length) headers["References"] = draft.references.join(" ");
 
+        const attachments = await Promise.all(draft.attachments.map(async a => ({
+            filename: a.filename,
+            contentType: a.content_type,
+            content: await this.attachmentBody(draft, a),
+        })));
         const { providerId } = await this.provider.send(
             {
                 from: draft.from,
@@ -537,11 +665,13 @@ export class Mail {
                 text: sender.signatureText ? `${draft.text}\n\n${sender.signatureText}` : draft.text,
                 html: (draft.html ?? textToHtml(draft.text)) + (sender.signatureHtml ? `\n${sender.signatureHtml}` : ""),
                 headers,
+                attachments,
             },
             draft.id,
         );
 
         draft.status = "sent";
+        draft.pending = null;
         draft.provider_id = providerId;
         draft.sent_at = new Date().toISOString();
         draft.headers = headers;
@@ -566,15 +696,21 @@ export class Mail {
         return this.send({ replyToId: messageId, replyAll, text }, actor);
     }
 
-    async getAttachmentUrl(messageId: string, attachmentId: string, scope: Scope): Promise<string> {
+    /** An inbound attachment's metadata and bytes, from disk or, the first time, from the provider. */
+    async getAttachment(messageId: string, attachmentId: string, scope: Scope): Promise<{ meta: AttachmentMeta; body: Uint8Array }> {
         const message = await this.requireMessage(messageId, scope);
-        if (!message.provider_id || message.direction !== "in") {
-            throw new InvalidRequestError(`Message ${messageId} has no downloadable attachments`);
-        }
-        if (!message.attachments.some(a => a.id === attachmentId)) {
-            throw new InvalidRequestError(`Attachment ${attachmentId} not found in message ${messageId}`);
-        }
-        return this.provider.getAttachmentUrl(message.provider_id, attachmentId);
+        const meta = message.attachments.find(a => a.id === attachmentId);
+        if (!meta) throw new NotFoundError(`Attachment ${attachmentId} not found in message ${messageId}`);
+        return { meta, body: await this.attachmentBody(message, meta) };
+    }
+
+    private async attachmentBody(message: Message, meta: AttachmentMeta): Promise<Uint8Array> {
+        const stored = await this.files.read(message.id, meta.id);
+        if (stored) return stored;
+        if (!message.provider_id || message.direction !== "in") throw new NotFoundError(`Attachment ${meta.id} not found`);
+        const body = await this.provider.getAttachment(message.provider_id, meta.id);
+        await this.files.write(message.id, meta.id, body);
+        return body;
     }
 }
 

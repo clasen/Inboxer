@@ -36,6 +36,13 @@ export interface OutboundMessage {
     text: string;
     html: string;
     headers: Record<string, string>;
+    attachments: OutboundAttachment[];
+}
+
+export interface OutboundAttachment {
+    filename: string;
+    contentType: string;
+    content: Uint8Array;
 }
 
 export interface OutboundStatus {
@@ -61,7 +68,8 @@ export interface MailProvider {
     listOutbound(since: Date): AsyncIterable<OutboundStatus>;
     /** Sends once per `idempotencyKey`; a retry with the same key must not send again. */
     send(message: OutboundMessage, idempotencyKey: string): Promise<{ providerId: string }>;
-    getAttachmentUrl(providerMessageId: string, attachmentId: string): Promise<string>;
+    /** The bytes of an inbound attachment. */
+    getAttachment(providerMessageId: string, attachmentId: string): Promise<Uint8Array>;
 }
 
 export type ProviderFactory = (config: Record<string, unknown>) => MailProvider;

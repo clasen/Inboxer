@@ -49,8 +49,8 @@ const config = {
         feedback: { address: "feedback@example.com", name: "Example" }
     },
     provider: { type: "resend", apiKey: "re_...", webhookSecret: "whsec_..." },
-    mcp: { tokens: { "support-schedule": "...", "laptop": "..." } },
-    ui: { cookieSecret: "...", loginLinkTtlMin: 10 }
+    mcp: { tokens: { "support-schedule": "...", "laptop": "..." }, maxAttachmentMb: 10 },
+    ui: { cookieSecret: "...", loginLinkTtlMin: 10, undoSec: 10, maxUploadMb: 20 }
 };
 ```
 
@@ -131,15 +131,18 @@ With roster's default isolation the site runs in its own process, so the databas
 | Key | Meaning |
 | --- | --- |
 | `publicUrl` | Base URL used in login links |
-| `dataDir` | Absolute directory for `inboxer.db` |
+| `dataDir` | Absolute directory for `inboxer.db` and the `attachments/` folder |
 | `syncIntervalMin` | Minutes between backup syncs with the provider |
 | `threadWindowDays` | How far back a subject match may join an existing thread |
 | `mailboxes.<id>` | `address`, `name`, optional `signatureText` and `signatureHtml` |
 | `provider` | `type` plus the provider's own options, such as Resend's `apiKey` and `webhookSecret` |
 | `mcp.tokens.<name>` | Bearer tokens for MCP that reach every mailbox; the name is recorded as the actor in the audit log |
 | `mailboxes.<id>.tokens.<name>` | Bearer tokens that reach only that mailbox |
+| `mcp.maxAttachmentMb` | Largest attachment `get_attachment` returns as content |
 | `ui.cookieSecret` | Signs the UI session cookie |
 | `ui.loginLinkTtlMin` | Minutes before an unused login link expires |
+| `ui.undoSec` | Seconds a Send or Discard in the UI waits before it happens, with an Undo button |
+| `ui.maxUploadMb` | Largest file a reviewer can attach to a draft |
 
 `mailboxes` is an object keyed by id rather than an array, so a per-environment override can replace one mailbox without repeating the others. Mail sent to an address that matches no mailbox lands in the reserved `catchall` mailbox, which can be read but cannot send.
 
@@ -155,7 +158,7 @@ interface MailProvider {
     listInbound(since: Date): AsyncIterable<string>;
     listOutbound(since: Date): AsyncIterable<{ providerId: string; status: DeliveryStatus }>;
     send(message: OutboundMessage, idempotencyKey: string): Promise<{ providerId: string }>;
-    getAttachmentUrl(providerMessageId: string, attachmentId: string): Promise<string>;
+    getAttachment(providerMessageId: string, attachmentId: string): Promise<Uint8Array>;
 }
 
 type ProviderEvent =
@@ -165,7 +168,7 @@ type ProviderEvent =
 type DeliveryStatus = "sent" | "delivered" | "bounced" | "failed";
 ```
 
-`send()` must not deliver twice for the same `idempotencyKey`. Inboxer uses the draft id, so retrying a failed send is safe. Pass your own implementation with `createInboxer(cfg, { provider })`. All the types above are exported from `inboxer`.
+`OutboundMessage.attachments` carries the draft's files as `{ filename, contentType, content }`. `InboundMessage.attachments` lists `{ id, filename, content_type, size, inline, content_id }`; `inline` marks an image embedded in the body by `cid:`. `send()` must not deliver twice for the same `idempotencyKey`. Inboxer uses the draft id, so retrying a failed send is safe. Pass your own implementation with `createInboxer(cfg, { provider })`. All the types above are exported from `inboxer`.
 
 ### Resend
 
@@ -176,7 +179,7 @@ Resend handles sending and receiving. Inboxer talks to it in three ways:
 | Direction | How |
 | --- | --- |
 | Resend → Inboxer | A webhook to `<publicUrl>/webhooks/resend` for every received email and delivery event, signed with Svix |
-| Inboxer → Resend | The REST API with your API key: fetch received emails, send, read delivery status, get attachment URLs |
+| Inboxer → Resend | The REST API with your API key: fetch received emails and their attachments, send, read delivery status |
 | Backup | Every `syncIntervalMin` minutes Inboxer lists recent received and sent emails, in case a webhook was lost |
 
 #### Setting up Resend and your domain
@@ -274,7 +277,7 @@ Ask the client to call `list_mailboxes` to check the connection. Connectors that
 | `update_draft(id, version, ..., force?)` | Requires the current `version`; refuses a draft a human edited unless `force: true` |
 | `list_drafts(mailbox?)` · `discard_draft(id)` · `send_draft(id)` | Draft lifecycle; `send_draft` sends the last saved version |
 | `send(mailbox, to, subject, text, ...)` · `reply(message_id, text, reply_all?)` | Direct sending, for consumers whose rules allow it |
-| `get_attachment(message_id, attachment_id)` | Temporary download URL |
+| `get_attachment(message_id, attachment_id)` | The attachment itself: images as image content the model can see, text as text, anything else (PDF, documents) as an embedded resource. Up to `mcp.maxAttachmentMb` |
 | `create_login_link(label?, thread_id?)` · `list_sessions` · `revoke_session(id)` | Access to the UI; with `thread_id` the link lands on that thread |
 
 ### Context
@@ -292,10 +295,10 @@ Every thread, message and draft in a result carries a `url` that opens it in the
 
 The UI is server-rendered with Hono and htmx, without a front-end build, and works on a phone.
 
-- **Drafts:** mailbox, recipient, the agent's note and the thread underneath, with Edit, Send and Discard.
-- **Editing:** To, Cc, Subject and a plain-text body, with Save and Save & Send. HTML is generated from the text at send time, with the mailbox signature. If the agent changed the draft while you were editing, saving shows both versions instead of overwriting. Your edits mark the draft `edited_by_human`, so agents leave it alone.
+- **Drafts:** mailbox, recipient, the agent's note and the thread underneath, newest first, with Edit, Send and Discard. Send and Discard happen after `ui.undoSec` seconds, with an Undo button meanwhile; the wait runs on the server, so closing the tab does not cancel it and a restart resumes it. Agents cannot change a draft during that window.
+- **Editing:** To, Cc, Subject and a plain-text body, with Save and Save & Send. Attach files with the Attach button or by dropping them on the editor; they go out with the message. HTML is generated from the text at send time, with the mailbox signature. If the agent changed the draft while you were editing, saving shows both versions instead of overwriting. Your edits mark the draft `edited_by_human`, so agents leave it alone.
 - **Inbox:** threads per mailbox, filtered by mailbox and by unanswered, all or archived.
-- **Thread:** messages in order, as plain text, with the context agents stored for the thread and its participants. Incoming HTML is never rendered.
+- **Thread:** messages newest first, as plain text, with the context agents stored for the thread and its participants. Incoming HTML is never rendered. Images, embedded ones included, show as thumbnails under the message and other attachments as file links. Only common image types and PDFs open in the browser, sandboxed; everything else downloads.
 - **Devices:** the browsers signed in, each with a Revoke button.
 
 The theme follows the system setting, with a System / Light / Dark switch stored in a cookie. Every UI string lives in `src/ui/strings.ts`.
@@ -340,6 +343,8 @@ DeepBase is a nested key-value store without secondary indexes, so Inboxer maint
 | `contacts/<sha1(address)>` · `thread_context/<id>` | Context set through MCP |
 | `audit/<id>` | Sends, edits, discards, labels, context changes, login links and session changes, with the actor |
 | `login_links/<sha256>` · `sessions/<sha256>` | UI access |
+
+Inbound attachments are copied to `<dataDir>/attachments/<message id>/` when the message arrives, so they outlive the provider's retention. One that fails to download is fetched again the first time it is opened.
 
 Search scans messages in memory. That is enough for support volumes; a dedicated full-text index can be added later without changing the tools.
 

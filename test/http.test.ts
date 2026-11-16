@@ -215,6 +215,68 @@ describe("http", () => {
         await bot.close();
     });
 
+    test("attachments: the UI serves them safely and get_attachment returns their content", async () => {
+        const cookie = await signIn(h);
+        const meta = (id: string, filename: string, content_type: string) => ({ id, filename, content_type, size: null, inline: false, content_id: null });
+        h.provider.addInbound({ providerId: "a", text: "see [image: photo.png] here", attachments: [
+            meta("img", "photo.png", "image/png"), meta("page", "x.html", "text/html"), meta("pdf", "terms.pdf", "application/pdf"), meta("big", "big.bin", "application/zip"),
+        ] });
+        h.provider.files.set("a/img", new Uint8Array([137, 80, 78, 71]));
+        h.provider.files.set("a/page", new TextEncoder().encode("<script>alert(1)</script>"));
+        h.provider.files.set("a/pdf", new TextEncoder().encode("%PDF-1.7"));
+        h.provider.files.set("a/big", new Uint8Array(1024 * 1024 + 1));
+        await webhook(h, [{ type: "received", providerId: "a" }]);
+        const client = await mcpClient(h);
+        const [thread] = (await call(client, "list_threads")).data;
+        const { data } = await call(client, "get_thread", { thread_id: thread.id });
+        const messageId = data.messages[0].id;
+
+        const page = await (await req(h, `/threads/${thread.id}`, { cookie })).text();
+        assert.ok(page.includes(`<img src="/attachments/${messageId}/img"`));
+        assert.ok(!page.includes("[image: photo.png]"));
+        const image = await req(h, `/attachments/${messageId}/img`, { cookie });
+        assert.equal(image.headers.get("content-type"), "image/png");
+        assert.match(image.headers.get("content-disposition")!, /^inline/);
+        const html = await req(h, `/attachments/${messageId}/page`, { cookie });
+        assert.equal(html.headers.get("content-type"), "application/octet-stream");
+        assert.match(html.headers.get("content-disposition")!, /^attachment; filename\*=UTF-8''x\.html/);
+        assert.match(html.headers.get("content-security-policy")!, /sandbox/);
+        assert.equal((await req(h, `/attachments/${messageId}/img`)).status, 401);
+
+        const get = (attachment_id: string) => client.callTool({ name: "get_attachment", arguments: { message_id: messageId, attachment_id } });
+        const content = async (id: string) => ((await get(id)).content as { type: string; [k: string]: unknown }[])[1]!;
+        assert.deepEqual(await content("img"), { type: "image", data: "iVBORw==", mimeType: "image/png" });
+        assert.deepEqual(await content("page"), { type: "text", text: "<script>alert(1)</script>" });
+        const pdf = await content("pdf") as { resource: { mimeType: string; blob: string } };
+        assert.equal(pdf.resource.mimeType, "application/pdf");
+        assert.equal(Buffer.from(pdf.resource.blob, "base64").toString(), "%PDF-1.7");
+        const big = await get("big");
+        assert.equal(big.isError, true);
+        assert.match((big.content as { text: string }[])[0]!.text, /over the 1 MB limit/);
+        await client.close();
+    });
+
+    test("the editor uploads files, refuses ones over the limit, and sends them", async () => {
+        const cookie = await signIn(h);
+        const client = await mcpClient(h);
+        const { data: draft } = await call(client, "create_draft", { mailbox: "support", to: ["ana@customer.test"], subject: "Hi", text: "see attached" });
+        const editor = await (await req(h, `/drafts/${draft.id}/edit`, { cookie })).text();
+        assert.ok(editor.includes("data-drop"));
+
+        const form = new FormData();
+        form.append("files", new File(["hello"], "notes.txt", { type: "text/plain" }));
+        form.append("files", new File([new Uint8Array(1024 * 1024 + 1)], "huge.zip", { type: "application/zip" }));
+        const list = await (await req(h, `/drafts/${draft.id}/attachments`, { method: "POST", cookie, body: form })).text();
+        assert.match(list, /notes\.txt/);
+        assert.match(list, /huge\.zip is larger than 1 MB/);
+
+        const { data: drafts } = await call(client, "list_drafts");
+        assert.deepEqual(drafts[0].attachments.map((a: { filename: string }) => a.filename), ["notes.txt"]);
+        await call(client, "send_draft", { id: draft.id });
+        assert.equal(new TextDecoder().decode(h.provider.sent[0]!.message.attachments[0]!.content), "hello");
+        await client.close();
+    });
+
     test("editing a draft in the UI detects agent changes and never overwrites silently", async () => {
         const cookie = await signIn(h);
         const client = await mcpClient(h);
@@ -237,9 +299,20 @@ describe("http", () => {
 
         form.set("version", "2");
         form.set("send", "1");
-        const sent = await (await req(h, `/drafts/${draft.id}/save`, { method: "POST", cookie, body: form })).text();
-        assert.match(sent, /Sent to ana@customer.test/);
+        const pending = await (await req(h, `/drafts/${draft.id}/save`, { method: "POST", cookie, body: form })).text();
+        assert.match(pending, /Sending to <strong>ana@customer.test/);
+        assert.equal(h.provider.sent.length, 0);
+
+        const undone = await (await req(h, `/drafts/${draft.id}/undo`, { method: "POST", cookie })).text();
+        assert.match(undone, /human edit/);
+        await new Promise(resolve => setTimeout(resolve, 120));
+        assert.equal(h.provider.sent.length, 0, "an undone send never goes out");
+
+        await req(h, `/drafts/${draft.id}/send`, { method: "POST", cookie });
+        assert.equal((await call(client, "update_draft", { id: draft.id, version: 3, text: "late", force: true })).error, true);
+        await new Promise(resolve => setTimeout(resolve, 120));
         assert.equal(h.provider.sent[0]!.message.text, "human edit\n\n-- Support");
+        assert.match(await (await req(h, `/drafts/${draft.id}/undo`, { method: "POST", cookie })).text(), /Sent to ana@customer.test/);
 
         const blocked = await call(client, "list_drafts");
         assert.deepEqual(blocked.data, []);

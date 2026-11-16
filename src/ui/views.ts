@@ -30,7 +30,7 @@ function formatDate(iso: string): string {
         : date.toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" });
 }
 
-export function layout(title: string, body: View, opts: { theme: Theme; page: Page; draftCount?: number; signedIn: boolean }): View {
+export function layout(title: string, body: View, opts: { theme: Theme; page: Page; draftCount?: number; signedIn: boolean; domains?: string[] }): View {
     const nav = (page: Page, href: string, label: string, extra: View | "" = "") =>
         h`<a href="${href}" ${raw(opts.page === page ? 'aria-current="page"' : "")}>${label}${extra}</a>`;
     return h`<!doctype html>
@@ -41,6 +41,7 @@ export function layout(title: string, body: View, opts: { theme: Theme; page: Pa
 <title>${title} · ${S.appName}</title>
 <link rel="stylesheet" href="${ASSETS["style.css"]!.url}">
 <script src="${ASSETS["htmx.min.js"]!.url}" defer></script>
+<script src="${ASSETS["app.js"]!.url}" defer></script>
 </head>
 <body>
 ${when(opts.signedIn, () => h`<header>
@@ -57,7 +58,7 @@ ${when(opts.signedIn, () => h`<header>
   </form>
   <form method="post" action="/logout"><button class="link">${S.logout}</button></form>
 </header>`)}
-<main>${body}</main>
+<main>${when(opts.domains?.length, () => h`<div class="domain">${opts.domains!.join(" · ")}</div>`)}${body}</main>
 </body>
 </html>`;
 }
@@ -78,6 +79,41 @@ function mailboxBadge(mailbox: string): View {
     return h`<span class="badge">${mailbox}</span>`;
 }
 
+const PREVIEWABLE = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
+
+/** Image types a browser renders without running code; SVG is left out on purpose. */
+export function isPreviewable(contentType: string): boolean {
+    return PREVIEWABLE.has(contentType);
+}
+
+function formatSize(bytes: number | null): string {
+    if (bytes === null) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1048576) return `${Math.round(bytes / 1024)} KB`;
+    return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+/** Images first as thumbnails, inline ones included; the rest as file links. */
+function attachments(m: Pick<MessageView, "id" | "attachments">): View | "" {
+    if (!m.attachments.length) return "";
+    const href = (id: string) => `/attachments/${encodeURIComponent(m.id)}/${encodeURIComponent(id)}`;
+    const images = m.attachments.filter(a => isPreviewable(a.content_type));
+    const files = m.attachments.filter(a => !isPreviewable(a.content_type));
+    return h`${when(images.length, () => h`<div class="images">${join(images.map(a =>
+        h`<a href="${href(a.id)}" target="_blank" rel="noopener"><img src="${href(a.id)}" alt="${a.filename}" loading="lazy"></a>`))}</div>`)}
+${when(files.length, () => h`<div class="files">${join(files.map(a =>
+        h`<a class="file" href="${href(a.id)}" target="_blank" rel="noopener"><span>${a.filename}</span><span class="size">${formatSize(a.size)}</span></a>`))}</div>`)}`;
+}
+
+/** Mail clients write "[image: name.png]" in the text part where an image sat; the image shows below instead. */
+function withoutImagePlaceholders(m: MessageView): string {
+    let text = m.text;
+    for (const a of m.attachments) {
+        if (isPreviewable(a.content_type)) text = text.split(`[image: ${a.filename}]`).join("");
+    }
+    return text.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export function messageCard(m: MessageView): View {
     return h`<article class="card ${m.direction}">
   <div class="meta">
@@ -85,8 +121,9 @@ export function messageCard(m: MessageView): View {
     <span>${formatDate(m.date)}</span>
     ${when(m.direction === "out" && m.status !== "draft", () => h`<span>${m.status}</span>`)}
   </div>
-  <div class="meta"><span>${S.to}: ${m.to.join(", ")}</span>${when(m.cc.length, () => h`<span>${S.cc}: ${m.cc.join(", ")}</span>`)}</div>
-  <pre class="body">${m.text}</pre>
+  ${when(m.to.length || m.cc.length, () => h`<div class="meta">${when(m.to.length, () => h`<span>${S.to}: ${m.to.join(", ")}</span>`)}${when(m.cc.length, () => h`<span>${S.cc}: ${m.cc.join(", ")}</span>`)}</div>`)}
+  <pre class="body">${withoutImagePlaceholders(m)}</pre>
+  ${attachments(m)}
 </article>`;
 }
 
@@ -110,7 +147,20 @@ function contextBlock(ctx: ContextView | null): View | "" {
 </section>`))}</details>`;
 }
 
+/** A send or discard in its undo window; reloads itself when the window closes. */
+function pendingCard(d: Message): View {
+    const left = Math.max(0, Date.parse(d.pending!.at) - Date.now());
+    return h`<article class="card pending" id="draft-${d.id}" hx-get="/drafts/${d.id}/card" hx-trigger="load delay:${left + 400}ms" hx-swap="outerHTML">
+  <div class="pending-row">
+    <span>${d.pending!.action === "send" ? h`${S.sending} <strong>${d.to.join(", ")}</strong>` : S.discarding}</span>
+    <button hx-post="/drafts/${d.id}/undo" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.undo}</button>
+  </div>
+  <i class="countdown" style="animation-duration: ${left}ms"></i>
+</article>`;
+}
+
 export function draftCard(d: Message, history: MessageView[], ctx: ContextView | null): View {
+    if (d.pending) return pendingCard(d);
     return h`<article class="card" id="draft-${d.id}">
   <div class="meta">
     ${mailboxBadge(d.mailbox)}
@@ -123,10 +173,11 @@ export function draftCard(d: Message, history: MessageView[], ctx: ContextView |
   ${contextBlock(ctx)}
   ${when(d.note, () => h`<div class="note">${d.note}</div>`)}
   <pre class="body">${d.text}</pre>
+  ${attachments(d)}
   <div class="actions">
     <button hx-get="/drafts/${d.id}/edit" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.edit}</button>
-    <button class="primary" hx-post="/drafts/${d.id}/send" hx-target="#draft-${d.id}" hx-swap="outerHTML" hx-confirm="${S.confirmSend}">${S.send}</button>
-    <button class="danger" hx-post="/drafts/${d.id}/discard" hx-target="#draft-${d.id}" hx-swap="outerHTML" hx-confirm="${S.confirmDiscard}">${S.discard}</button>
+    <button class="primary" hx-post="/drafts/${d.id}/send" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.send}</button>
+    <button class="danger" hx-post="/drafts/${d.id}/discard" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.discard}</button>
   </div>
   ${when(history.length, () => h`<details>
     <summary>${S.thread} (${history.length})</summary>
@@ -144,7 +195,8 @@ export interface DraftForm {
 
 export function draftEditor(d: Message, form: DraftForm, conflict: Message | null): View {
     const version = conflict ? conflict.version : d.version;
-    return h`<article class="card ${conflict ? "conflict" : ""}" id="draft-${d.id}">
+    return h`<article class="card ${conflict ? "conflict" : ""}" id="draft-${d.id}" data-drop>
+  <div class="drop-hint">${S.dropFiles}</div>
   <div class="meta">${mailboxBadge(d.mailbox)}<span class="badge draft">${S.draft}</span></div>
   ${when(d.note, () => h`<div class="note">${d.note}</div>`)}
   ${when(conflict, () => h`<p class="warn">${S.conflictTitle}</p><div class="subject">${S.yourVersion}</div>`)}
@@ -164,9 +216,10 @@ export function draftEditor(d: Message, form: DraftForm, conflict: Message | nul
       <input id="subject-${d.id}" name="subject" value="${form.subject}" required>
     </div>
     <textarea id="text-${d.id}" name="text" aria-label="${S.body}" required>${form.text}</textarea>
+    ${draftFiles(d, null)}
     <div class="actions">
       <button type="submit">${S.save}</button>
-      <button type="submit" name="send" value="1" class="primary" hx-confirm="${S.confirmSend}">${S.saveAndSend}</button>
+      <button type="submit" name="send" value="1" class="primary">${S.saveAndSend}</button>
       <button type="button" class="link" hx-get="/drafts/${d.id}/card" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.cancel}</button>
     </div>
   </form>
@@ -179,6 +232,15 @@ export function draftEditor(d: Message, form: DraftForm, conflict: Message | nul
     </div>
   </details>`)}
 </article>`;
+}
+
+/** The editor's attachment list with remove buttons, and the picker that drag and drop also feeds. */
+export function draftFiles(d: Message, error: string | null): View {
+    return h`<div class="draft-files" id="files-${d.id}">
+  ${join(d.attachments.map(a => h`<span class="file"><span>${a.filename}</span><span class="size">${formatSize(a.size)}</span><button type="button" class="link" aria-label="${S.remove} ${a.filename}" hx-post="/drafts/${d.id}/attachments/${a.id}/remove" hx-target="#files-${d.id}" hx-swap="outerHTML">×</button></span>`))}
+  <label class="file attach">${S.attach}<input type="file" name="files" multiple hidden hx-post="/drafts/${d.id}/attachments" hx-encoding="multipart/form-data" hx-trigger="change" hx-target="#files-${d.id}" hx-swap="outerHTML" hx-include="this"></label>
+  ${when(error, () => h`<p class="warn">${error}</p>`)}
+</div>`;
 }
 
 export function draftDone(id: string, text: string): View {
@@ -222,7 +284,7 @@ function threadRow(t: Thread, own: Set<string>): View {
 
 export function threadPage(thread: Thread, items: View[], ctx: ContextView): View {
     return h`<h1>${thread.subject || "—"}</h1>
-<div class="meta">${mailboxBadge(thread.mailbox)}${archiveButton(thread)}</div>
+<div class="meta thread-head">${mailboxBadge(thread.mailbox)}${archiveButton(thread)}</div>
 ${contextBlock(ctx)}
 <section class="messages">${join(items)}</section>`;
 }
@@ -248,6 +310,6 @@ ${sessions.length ? join(sessions.map(s => h`<article class="card" id="session-$
     <span>${S.lastSeen}: ${formatDate(s.last_seen)}</span>
     <span>${S.createdBy}: ${s.created_by}</span>
   </div>
-  ${when(s.id !== currentId, () => h`<div class="actions"><button class="danger" hx-post="/devices/${s.id}/revoke" hx-target="#session-${s.id}" hx-swap="delete" hx-confirm="${S.confirmRevoke}">${S.revoke}</button></div>`)}
+  ${when(s.id !== currentId, () => h`<div class="actions"><button class="danger" hx-post="/devices/${s.id}/revoke" hx-target="#session-${s.id}" hx-swap="delete">${S.revoke}</button></div>`)}
 </article>`)) : h`<p class="empty">${S.devicesEmpty}</p>`}`;
 }

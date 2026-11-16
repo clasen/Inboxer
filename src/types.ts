@@ -19,8 +19,8 @@ export interface InboxerConfig {
     threadWindowDays: number;
     mailboxes: Record<string, MailboxConfig>;
     provider: ProviderConfig;
-    mcp: { tokens: Record<string, string> };
-    ui: { cookieSecret: string; loginLinkTtlMin: number };
+    mcp: { tokens: Record<string, string>; maxAttachmentMb: number };
+    ui: { cookieSecret: string; loginLinkTtlMin: number; undoSec: number; maxUploadMb: number };
 }
 
 export const CATCHALL = "catchall";
@@ -36,6 +36,9 @@ export interface AttachmentMeta {
     filename: string;
     content_type: string;
     size: number | null;
+    /** Shown inside the body (e.g. an embedded image referenced by `cid:`), not offered as a file. */
+    inline: boolean;
+    content_id: string | null;
 }
 
 export interface Message {
@@ -68,6 +71,14 @@ export interface Message {
     sent_at: string | null;
     version: number;
     edited_by_human: boolean;
+    /** A send or discard a human started, carried out at `at` unless undone first. */
+    pending: PendingAction | null;
+}
+
+export interface PendingAction {
+    action: "send" | "discard";
+    at: string;
+    by: string;
 }
 
 export interface Thread {

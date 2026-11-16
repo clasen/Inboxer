@@ -36,6 +36,7 @@ export function createInboxer(cfg: InboxerConfig, options: InboxerOptions = {}):
 
     const ready = (async () => {
         await store.connect();
+        await mail.resumePending();
         await sync.run().catch(err => console.error("inboxer: initial sync failed", err));
         sync.start();
     })();
@@ -49,6 +50,7 @@ export function createInboxer(cfg: InboxerConfig, options: InboxerOptions = {}):
         ready,
         async close() {
             await ready.catch(() => {});
+            mail.stopPending();
             await sync.stop();
             await store.close();
         },
@@ -82,6 +84,7 @@ export type {
     DeliveryStatus,
     InboundMessage,
     MailProvider,
+    OutboundAttachment,
     OutboundMessage,
     OutboundStatus,
     ProviderEvent,

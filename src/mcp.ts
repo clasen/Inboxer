@@ -1,12 +1,13 @@
+import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import type { Access } from "./auth.ts";
 import { appUrl, threadPath } from "./config.ts";
 import { ConflictError, toView, type Mail, type MessageView } from "./core/mail.ts";
-import type { Actor, InboxerConfig, Message, Thread } from "./types.ts";
+import type { Actor, AttachmentMeta, InboxerConfig, Message, Thread } from "./types.ts";
 
-const VERSION = "0.1.0";
+const { version: VERSION } = createRequire(import.meta.url)("../package.json") as { version: string };
 
 function json(value: unknown) {
     return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
@@ -20,7 +21,7 @@ function messageView(cfg: Cfg, m: MessageView) {
 }
 
 function draftView(cfg: Cfg, d: Message) {
-    return { ...messageView(cfg, toView(d)), bcc: d.bcc, html: d.html };
+    return { ...messageView(cfg, toView(d)), bcc: d.bcc, html: d.html, pending: d.pending };
 }
 
 function threadView(cfg: Cfg, t: Thread) {
@@ -37,6 +38,17 @@ function wrap<A>(cfg: Cfg, fn: (args: A) => Promise<unknown>) {
             return { ...json(body), isError: true };
         }
     };
+}
+
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const TEXT_TYPES = /^(text\/|application\/(json|xml|csv)$)/;
+
+function attachmentContent(cfg: Cfg, messageId: string, meta: AttachmentMeta, body: Uint8Array) {
+    const data = Buffer.from(body).toString("base64");
+    if (IMAGE_TYPES.has(meta.content_type)) return { type: "image" as const, data, mimeType: meta.content_type };
+    if (TEXT_TYPES.test(meta.content_type)) return { type: "text" as const, text: new TextDecoder().decode(body) };
+    const uri = appUrl(cfg, `/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(meta.id)}`);
+    return { type: "resource" as const, resource: { uri, mimeType: meta.content_type, blob: data } };
 }
 
 const addresses = z.array(z.string()).describe("Addresses, e.g. \"Ana <ana@example.com>\" or \"ana@example.com\"");
@@ -177,9 +189,19 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     }, wrap(cfg, async ({ message_id, text, reply_all }) => messageView(cfg, toView(await mail.reply(message_id, text, reply_all ?? false, actor)))));
 
     server.registerTool("get_attachment", {
-        description: "Temporary download URL for an inbound attachment.",
+        description: "Content of an inbound attachment: images as images, text as text, anything else (e.g. PDF) as an embedded resource. Larger than the server's limit returns an error.",
         inputSchema: { message_id: z.string(), attachment_id: z.string() },
-    }, wrap(cfg, async ({ message_id, attachment_id }) => ({ url: await mail.getAttachmentUrl(message_id, attachment_id, actor.scope) })));
+    }, async ({ message_id, attachment_id }) => {
+        try {
+            const { meta, body } = await mail.getAttachment(message_id, attachment_id, actor.scope);
+            if (body.byteLength > cfg.mcp.maxAttachmentMb * 1024 * 1024) {
+                throw new Error(`Attachment is ${(body.byteLength / 1048576).toFixed(1)} MB, over the ${cfg.mcp.maxAttachmentMb} MB limit`);
+            }
+            return { content: [{ type: "text" as const, text: JSON.stringify(meta) }, attachmentContent(cfg, message_id, meta, body)] };
+        } catch (err) {
+            return { ...json({ error: (err as Error).message }), isError: true };
+        }
+    });
 
     server.registerTool("create_login_link", {
         description: "One-time link that signs one browser into the review UI, limited to the mailboxes this token reaches. Expires unused after a few minutes. Pass thread_id to land on that thread after signing in. Browsers already signed in can open a result's url directly.",

@@ -1,9 +1,9 @@
 import type { Context, Hono } from "hono";
 import { deleteCookie, getCookie, getSignedCookie, setCookie, setSignedCookie } from "hono/cookie";
 import type { Access } from "../auth.ts";
-import { bareAddress, splitAddresses } from "../core/address.ts";
+import { bareAddress, domainOf, splitAddresses } from "../core/address.ts";
 import { ConflictError, InvalidRequestError, type Mail, type MessageView } from "../core/mail.ts";
-import type { Actor, InboxerConfig, Message, Session } from "../types.ts";
+import { CATCHALL, type Actor, type InboxerConfig, type Message, type Session } from "../types.ts";
 import { S } from "./strings.ts";
 import * as V from "./views.ts";
 
@@ -25,6 +25,12 @@ function clientInfo(c: Context) {
     return { ip: forwarded || c.req.header("x-real-ip") || null, userAgent: c.req.header("user-agent") ?? null };
 }
 
+/** htmx sends the page URL; draft cards on a thread page leave out the thread around them. */
+function onThreadPage(c: Context): boolean {
+    const current = c.req.header("hx-current-url");
+    return !!current && new URL(current).pathname.startsWith("/threads/");
+}
+
 function uiActor(session: Session): Actor {
     return { kind: "ui", name: session.label ?? session.id.slice(0, 12), scope: session.scope };
 }
@@ -33,10 +39,21 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     const secret = cfg.ui.cookieSecret;
     const cookieOptions = { httpOnly: true, secure: true, sameSite: "Lax", path: "/", maxAge: COOKIE_MAX_AGE } as const;
 
+    const own = new Set(Object.values(cfg.mailboxes).map(m => bareAddress(m.address)));
+    /** Recipients that are our own mailboxes are implied by the mailbox badge. */
+    const shown = (m: MessageView): MessageView => ({
+        ...m,
+        to: m.to.filter(a => !own.has(bareAddress(a))),
+        cc: m.cc.filter(a => !own.has(bareAddress(a))),
+    });
+
     const page = async (c: Context<UiEnv>, title: string, body: V.View, current: V.Page, status: 200 | 401 | 404 = 200) => {
         const session = c.get("session");
         const draftCount = session ? (await mail.listDrafts(undefined, session.scope)).length : 0;
-        return c.html(V.layout(title, body, { theme: theme(c), page: current, draftCount, signedIn: !!session }), status);
+        const domains = session
+            ? [...new Set(mail.listMailboxes(session.scope).filter(m => m.id !== CATCHALL).map(m => domainOf(m.address)))]
+            : [];
+        return c.html(V.layout(title, body, { theme: theme(c), page: current, draftCount, signedIn: !!session, domains }), status);
     };
 
     // Sign-in: GET only shows a button, so link previews and scanners do not burn the link.
@@ -61,7 +78,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         return c.redirect(path, 303);
     });
 
-    const ui = ["/", "/inbox", "/threads/*", "/drafts/*", "/devices", "/devices/*", "/logout"];
+    const ui = ["/", "/inbox", "/threads/*", "/drafts/*", "/attachments/*", "/devices", "/devices/*", "/logout"];
     for (const path of ui) {
         app.use(path, async (c, next) => {
             const value = await getSignedCookie(c, secret, SESSION_COOKIE);
@@ -77,10 +94,22 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         });
     }
 
-    /** The sent and received messages around a draft, and the context of its thread. */
+    /** The sent and received messages around a draft, newest first, and the context of its thread. */
     const draftExtras = async (draft: Message, session: Session): Promise<{ history: MessageView[]; ctx: V.ContextView }> => {
         const { messages, context, contacts } = await mail.getThread(draft.thread_id, session.scope);
-        return { history: messages.filter(m => m.id !== draft.id && m.status !== "draft"), ctx: { context, contacts } };
+        const history = messages.filter(m => m.id !== draft.id && m.status !== "draft").reverse().map(shown);
+        return { history, ctx: { context, contacts } };
+    };
+
+    /** The card for a draft in whatever state it is now. */
+    const draftView = async (c: Context<UiEnv>, id: string): Promise<V.View> => {
+        const session = c.get("session");
+        const draft = await mail.requireMessage(id, session.scope);
+        if (draft.status === "discarded") return V.draftDone(id, S.discarded);
+        if (draft.status !== "draft") return V.draftDone(id, `${S.sentTo} ${draft.to.join(", ")}`);
+        if (onThreadPage(c)) return V.draftCard(draft, [], null);
+        const { history, ctx } = await draftExtras(draft, session);
+        return V.draftCard(draft, history, ctx);
     };
 
     app.get("/", async c => {
@@ -90,16 +119,11 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         return page(c, S.navDrafts, V.draftsPage(items), "drafts");
     });
 
-    app.get("/drafts/:id/card", async c => {
-        const draft = await mail.requireMessage(c.req.param("id"), c.get("session").scope);
-        if (draft.status !== "draft") return c.html(V.draftDone(draft.id, `${S.status}: ${draft.status}`));
-        const { history, ctx } = await draftExtras(draft, c.get("session"));
-        return c.html(V.draftCard(draft, history, ctx));
-    });
+    app.get("/drafts/:id/card", async c => c.html(await draftView(c, c.req.param("id"))));
 
     app.get("/drafts/:id/edit", async c => {
         const draft = await mail.requireMessage(c.req.param("id"), c.get("session").scope);
-        if (draft.status !== "draft") return c.html(V.draftDone(draft.id, `${S.status}: ${draft.status}`));
+        if (draft.status !== "draft" || draft.pending) return c.html(await draftView(c, draft.id));
         const form = { to: draft.to.join(", "), cc: draft.cc.join(", "), subject: draft.subject, text: draft.text };
         return c.html(V.draftEditor(draft, form, null));
     });
@@ -116,13 +140,8 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
                 subject: form.subject,
                 text: form.text,
             }, actor);
-            if (body.send === "1") {
-                const sent = await mail.sendDraft(id, actor);
-                return c.html(V.draftDone(id, `${S.sentTo} ${sent.to.join(", ")}`));
-            }
-            const draft = await mail.requireMessage(id, actor.scope);
-            const { history, ctx } = await draftExtras(draft, c.get("session"));
-            return c.html(V.draftCard(draft, history, ctx));
+            if (body.send === "1") await mail.schedule(id, "send", actor);
+            return c.html(await draftView(c, id));
         } catch (err) {
             if (err instanceof ConflictError) return c.html(V.draftEditor(err.current, form, err.current));
             if (err instanceof InvalidRequestError) return c.html(V.draftDone(id, err.message));
@@ -130,27 +149,44 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         }
     });
 
-    app.post("/drafts/:id/send", async c => {
+    app.post("/drafts/:id/attachments", async c => {
         const id = c.req.param("id");
-        try {
-            const sent = await mail.sendDraft(id, uiActor(c.get("session")));
-            return c.html(V.draftDone(id, `${S.sentTo} ${sent.to.join(", ")}`));
-        } catch (err) {
-            if (err instanceof InvalidRequestError) return c.html(V.draftDone(id, err.message));
-            throw err;
+        const actor = uiActor(c.get("session"));
+        const body = await c.req.parseBody({ all: true });
+        const files = ([] as unknown[]).concat(body.files ?? []).filter((f): f is File => f instanceof File);
+        const limit = cfg.ui.maxUploadMb * 1024 * 1024;
+        let error: string | null = null;
+        for (const file of files) {
+            if (file.size > limit) {
+                error = `${file.name} ${S.tooLarge} ${cfg.ui.maxUploadMb} MB`;
+                continue;
+            }
+            await mail.attach(id, { filename: file.name, contentType: file.type, body: new Uint8Array(await file.arrayBuffer()) }, actor);
         }
+        return c.html(V.draftFiles(await mail.requireMessage(id, actor.scope), error));
     });
 
-    app.post("/drafts/:id/discard", async c => {
-        const id = c.req.param("id");
-        try {
-            await mail.discardDraft(id, uiActor(c.get("session")));
-            return c.html(V.draftDone(id, S.discarded));
-        } catch (err) {
-            if (err instanceof InvalidRequestError) return c.html(V.draftDone(id, err.message));
-            throw err;
-        }
+    app.post("/drafts/:id/attachments/:attachmentId/remove", async c => {
+        const draft = await mail.detach(c.req.param("id"), c.req.param("attachmentId"), uiActor(c.get("session")));
+        return c.html(V.draftFiles(draft, null));
     });
+
+    // Send, discard and undo answer with the draft's current card, so a late click shows what happened.
+    for (const [path, act] of [
+        ["send", (id: string, actor: Actor) => mail.schedule(id, "send", actor)],
+        ["discard", (id: string, actor: Actor) => mail.schedule(id, "discard", actor)],
+        ["undo", (id: string, actor: Actor) => mail.undo(id, actor)],
+    ] as const) {
+        app.post(`/drafts/:id/${path}`, async c => {
+            const id = c.req.param("id");
+            try {
+                await act(id, uiActor(c.get("session")));
+            } catch (err) {
+                if (!(err instanceof InvalidRequestError)) throw err;
+            }
+            return c.html(await draftView(c, id));
+        });
+    }
 
     app.get("/inbox", async c => {
         const mailbox = c.req.query("mailbox") ?? "";
@@ -172,8 +208,8 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
             thread = await mail.requireThread(id, scope);
         }
         const { messages, context, contacts } = await mail.getThread(id, scope);
-        const items = await Promise.all(messages.map(async m =>
-            m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id), [], null) : V.messageCard(m)));
+        const items = await Promise.all([...messages].reverse().map(async m =>
+            m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id), [], null) : V.messageCard(shown(m))));
         return page(c, thread.subject || S.navInbox, V.threadPage(thread, items, { context, contacts }), "inbox");
     });
 
@@ -182,6 +218,19 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const archived = (await c.req.parseBody()).archived === "1";
         await mail.mark([id], { archived }, uiActor(c.get("session")));
         return c.html(V.archiveButton(await mail.store.requireThread(id)));
+    });
+
+    // Attachments are untrusted: only plain images and PDFs open in the browser, everything runs sandboxed.
+    app.get("/attachments/:messageId/:attachmentId", async c => {
+        const { meta, body } = await mail.getAttachment(c.req.param("messageId"), c.req.param("attachmentId"), c.get("session").scope);
+        const opens = V.isPreviewable(meta.content_type) || meta.content_type === "application/pdf";
+        return c.body(body as Uint8Array<ArrayBuffer>, 200, {
+            "Content-Type": opens ? meta.content_type : "application/octet-stream",
+            "Content-Disposition": `${opens ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(meta.filename)}`,
+            "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=31536000, immutable",
+        });
     });
 
     app.get("/devices", async c => {

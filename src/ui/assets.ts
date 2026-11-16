@@ -17,4 +17,5 @@ function load(file: string, type: string): Asset {
 export const ASSETS: Record<string, Asset> = {
     "style.css": load("style.css", "text/css; charset=utf-8"),
     "htmx.min.js": load("htmx.min.js", "text/javascript; charset=utf-8"),
+    "app.js": load("app.js", "text/javascript; charset=utf-8"),
 };

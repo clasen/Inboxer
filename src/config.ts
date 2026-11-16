@@ -43,8 +43,11 @@ export function assertConfig(cfg: InboxerConfig, { requireProvider }: { requireP
     if (!cfg.mcp?.tokens || typeof cfg.mcp.tokens !== "object") fail("mcp.tokens", "an object of named tokens");
     for (const [name, token] of Object.entries(cfg.mcp.tokens)) requireString(token, `mcp.tokens.${name}`);
     mcpTokens(cfg);
+    requirePositive(cfg.mcp.maxAttachmentMb, "mcp.maxAttachmentMb");
     requireString(cfg.ui?.cookieSecret, "ui.cookieSecret");
     requirePositive(cfg.ui?.loginLinkTtlMin, "ui.loginLinkTtlMin");
+    requirePositive(cfg.ui?.undoSec, "ui.undoSec");
+    requirePositive(cfg.ui?.maxUploadMb, "ui.maxUploadMb");
 }
 
 export interface McpToken {

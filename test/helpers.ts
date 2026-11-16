@@ -47,8 +47,15 @@ export class FakeProvider implements MailProvider {
         return { providerId };
     }
 
-    async getAttachmentUrl(providerMessageId: string, attachmentId: string): Promise<string> {
-        return `https://files.test/${providerMessageId}/${attachmentId}`;
+    /** Attachment bytes by `<providerId>/<attachmentId>`. */
+    files = new Map<string, Uint8Array>();
+    downloads = 0;
+
+    async getAttachment(providerMessageId: string, attachmentId: string): Promise<Uint8Array> {
+        this.downloads++;
+        const body = this.files.get(`${providerMessageId}/${attachmentId}`);
+        if (!body) throw new Error(`no attachment ${providerMessageId}/${attachmentId}`);
+        return body;
     }
 
     addInbound(partial: Partial<InboundMessage> & { providerId: string }): InboundMessage {
@@ -89,8 +96,8 @@ export function testConfig(dataDir: string): InboxerConfig {
             feedback: { address: "feedback@inboxer.test", name: "Inboxer", tokens: { "feedback-bot": FEEDBACK_TOKEN } },
         },
         provider: { type: "fake" },
-        mcp: { tokens: { agent: TOKEN } },
-        ui: { cookieSecret: "cookie-secret-for-tests", loginLinkTtlMin: 10 },
+        mcp: { tokens: { agent: TOKEN }, maxAttachmentMb: 1 },
+        ui: { cookieSecret: "cookie-secret-for-tests", loginLinkTtlMin: 10, undoSec: 0.05, maxUploadMb: 1 },
     };
 }
 

@@ -63,14 +63,14 @@ describe("resend provider", () => {
             html: "<p>Hi</p>",
             headers: { "In-Reply-To": "<a@inboxer.test>", References: "<z@x> <a@inboxer.test>" },
             message_id: "<r1@customer.test>",
-            attachments: [{ id: "att1", filename: "a.png", content_type: "image/png", size: 10 }],
+            attachments: [{ id: "att1", filename: "a.png", content_type: "image/png", size: 10, content_id: "<ii_abc>", content_disposition: "inline" }],
             created_at: "2026-11-01T10:00:00.000Z",
         }));
         const inbound = await provider.getInbound("r1");
         assert.equal(inbound.inReplyTo, "<a@inboxer.test>");
         assert.deepEqual(inbound.references, ["<z@x>", "<a@inboxer.test>"]);
         assert.deepEqual(inbound.deliveredTo, ["support@inboxer.test"]);
-        assert.deepEqual(inbound.attachments, [{ id: "att1", filename: "a.png", content_type: "image/png", size: 10 }]);
+        assert.deepEqual(inbound.attachments, [{ id: "att1", filename: "a.png", content_type: "image/png", size: 10, inline: true, content_id: "ii_abc" }]);
     });
 
     test("pages sent emails until they are older than since", async () => {
@@ -94,6 +94,7 @@ describe("resend provider", () => {
         const res = await provider.send({
             from: '"S" <s@inboxer.test>', to: ["a@x.test"], cc: [], bcc: [], replyTo: [], subject: "Hi", text: "t", html: "<p>t</p>",
             headers: { "Message-ID": "<id@inboxer.test>" },
+            attachments: [{ filename: "a.txt", contentType: "text/plain", content: new TextEncoder().encode("hi") }],
         }, "draft-1");
         assert.equal(res.providerId, "s1");
         const headers = calls[0]!.init.headers as Record<string, string>;
@@ -101,10 +102,18 @@ describe("resend provider", () => {
         const body = JSON.parse(String(calls[0]!.init.body));
         assert.equal(body.headers["Message-ID"], "<id@inboxer.test>");
         assert.equal("cc" in body, false);
+        assert.deepEqual(body.attachments, [{ filename: "a.txt", content: "aGk=", content_type: "text/plain" }]);
     });
 
     test("parses both Resend date formats", () => {
         assert.equal(parseResendDate("2026-04-03 22:13:42.674981+00").toISOString(), "2026-04-03T22:13:42.674Z");
         assert.equal(parseResendDate("2026-04-03T22:13:42.674Z").toISOString(), "2026-04-03T22:13:42.674Z");
+    });
+
+    test("downloads an attachment through its signed URL", async () => {
+        const calls = mockFetch(url => url.includes("/attachments/") ? { download_url: "https://cdn.resend.test/f" } : "bytes");
+        const body = await provider.getAttachment("r1", "att1");
+        assert.equal(new TextDecoder().decode(body), '"bytes"');
+        assert.deepEqual(calls.map(c => c.url), ["https://api.resend.com/emails/receiving/r1/attachments/att1", "https://cdn.resend.test/f"]);
     });
 });

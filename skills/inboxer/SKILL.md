@@ -26,8 +26,8 @@ const config = {
                    tokens: { "support-schedule": "<openssl rand -hex 32>" } }   // support only
     },
     provider: { type: "resend", apiKey: "re_...", webhookSecret: "whsec_..." },
-    mcp: { tokens: { "admin": "<openssl rand -hex 32>" } },                     // every mailbox
-    ui: { cookieSecret: "<openssl rand -hex 32>", loginLinkTtlMin: 10 }
+    mcp: { tokens: { "admin": "<openssl rand -hex 32>" }, maxAttachmentMb: 10 },  // every mailbox
+    ui: { cookieSecret: "<openssl rand -hex 32>", loginLinkTtlMin: 10, undoSec: 10, maxUploadMb: 20 }
 };
 ```
 
@@ -95,11 +95,12 @@ Rules for agents:
 - Put what the reviewer must do or check in `note`, not in the body. The note is never sent.
 - A new conversation needs `mailbox`, `to` and `subject`.
 - `update_draft` needs the draft's current `version`. On a conflict the error includes `current`; re-read it before retrying.
+- A draft whose `pending` is set is in the reviewer's undo window and is about to be sent or discarded; `update_draft` fails until it ends.
 - Never `force` an update of a draft with `edited_by_human: true` unless the user explicitly asks; the human's edit wins.
 - `send_draft` sends the last saved version. A failed send leaves the draft pending and retrying is safe.
 - `label` and `mark` accept message ids or thread ids; a thread id applies to every message in it. Archived threads come back to the inbox when a new message arrives.
 - `search` matches every term, ignoring case and accents, across subject, body, from and to; narrow with `mailbox`, `from`, `since`, `until`, `meta`. Pass `query`, `meta`, or both.
-- `get_attachment` returns a temporary URL for inbound attachments only.
+- Messages list their `attachments` (`inline: true` is an image embedded in the body). `get_attachment` returns the content: images as images you can look at, text as text, other files (PDF, documents) as an embedded resource. Files over `mcp.maxAttachmentMb` return an error. Agents cannot attach files to drafts; the reviewer can, in the UI, and they are listed in the draft's `attachments`.
 - Threads, messages and drafts in results carry `url`, which opens them in the review UI (scrolled to the draft). When telling the user what you drafted or sent, include that `url`.
 - Times are ISO 8601. `catchall` messages can be read and labeled but not answered from Inboxer.
 
