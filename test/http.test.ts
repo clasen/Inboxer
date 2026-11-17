@@ -385,6 +385,25 @@ describe("http", () => {
         await client.close();
     });
 
+    test("a catch-all thread shows the address it was written to and can be answered from it", async () => {
+        const cookie = await signIn(h);
+        h.provider.addInbound({ providerId: "c", to: ["info@inboxer.test"] });
+        await webhook(h, [{ type: "received", providerId: "c" }]);
+        const client = await mcpClient(h);
+        const [thread] = (await call(client, "list_threads")).data;
+        await client.close();
+
+        const page = await (await req(h, `/threads/${thread.id}`, { cookie })).text();
+        assert.ok(page.includes(`<span class="who">ana@customer.test</span>`), "our own address is not a participant");
+        assert.ok(page.includes(`<span class="badge mailbox">info</span>`) && !page.includes(">catchall<"), "tagged by the address, not the catch-all");
+        assert.ok(page.includes(`<option value="info@inboxer.test" `), "the address is an account to filter by");
+        assert.ok(page.includes(`action="/threads/${thread.id}/reply?status=unanswered"`), "the reply box is there");
+
+        await req(h, `/threads/${thread.id}/reply`, { method: "POST", cookie, body: new URLSearchParams({ text: "Hi Ana", action: "send" }) });
+        await new Promise(resolve => setTimeout(resolve, 120));
+        assert.deepEqual(h.provider.sent.map(s => [s.message.from, s.message.to]), [[`"Inboxer Support" <info@inboxer.test>`, ["Ana <ana@customer.test>"]]]);
+    });
+
     test("New mail starts a thread with a draft, or sends it", async () => {
         const cookie = await signIn(h);
         const home = await (await req(h, "/", { cookie })).text();

@@ -32,7 +32,7 @@ const config = {
 ```
 
 - Every key above is required except the mailbox signatures and mailbox tokens; `createInboxer` throws on a missing or invalid one. There are no defaults.
-- `mailboxes` is an object keyed by id. `catchall` is reserved: unknown recipients land there, and it cannot send.
+- `mailboxes` is an object keyed by id. `catchall` is reserved: unknown recipients land there, grouped by the address they were written to. It answers as that address, with the name and signature of a mailbox on the same domain, and cannot start new mail.
 - `provider.apiKey`, `provider.webhookSecret`, every token and `ui.cookieSecret` are secrets: keep them out of Git and out of logs.
 
 ## Serve
@@ -105,7 +105,7 @@ Rules for agents:
 - `search` matches every term, ignoring case and accents, across subject, body, from and to; narrow with `mailbox`, `from`, `since`, `until`, `meta`. Pass `query`, `meta`, or both.
 - Messages list their `attachments` (`inline: true` is an image embedded in the body). `get_attachment` returns the content: images as images you can look at, text as text, other files (PDF, documents) as an embedded resource. Files over `mcp.maxAttachmentMb` return an error. Agents cannot attach files to drafts; the reviewer can, in the UI, and they are listed in the draft's `attachments`.
 - Threads, messages and drafts in results carry `url`, which opens them in the review UI (scrolled to the draft). When telling the user what you drafted or sent, include that `url`.
-- Times are ISO 8601. `catchall` messages can be read and labeled but not answered from Inboxer.
+- Times are ISO 8601. A `catchall` reply goes out from the address the message was written to; `list_threads` also takes that address as `mailbox`.
 
 Context:
 

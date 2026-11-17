@@ -30,7 +30,7 @@ export interface ThreadLookup {
 export async function resolveThreadId(
     store: Store,
     lookup: ThreadLookup,
-    ownAddresses: Set<string>,
+    isOwn: (address: string) => boolean,
     windowDays: number,
 ): Promise<string> {
     for (const ref of [lookup.inReplyTo, ...[...lookup.references].reverse()]) {
@@ -41,7 +41,7 @@ export async function resolveThreadId(
     }
 
     const subject = normalizeSubject(lookup.subject);
-    const external = new Set(lookup.participants.filter(p => !ownAddresses.has(p)));
+    const external = new Set(lookup.participants.filter(p => !isOwn(p)));
     if (subject && external.size) {
         const since = new Date(lookup.at).getTime() - windowDays * DAY_MS;
         const match = (await store.allThreads())

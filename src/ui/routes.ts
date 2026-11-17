@@ -1,7 +1,7 @@
 import type { Context, Hono } from "hono";
 import { deleteCookie, getCookie, getSignedCookie, setCookie, setSignedCookie } from "hono/cookie";
 import type { Access } from "../auth.ts";
-import { bareAddress, domainOf, splitAddresses } from "../core/address.ts";
+import { domainOf, splitAddresses } from "../core/address.ts";
 import { ConflictError, InvalidRequestError, toView, type Mail, type MessageView, type ThreadStatus } from "../core/mail.ts";
 import { CATCHALL, type Actor, type InboxerConfig, type Message, type Session } from "../types.ts";
 import { S } from "./strings.ts";
@@ -33,12 +33,12 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     const secret = cfg.ui.cookieSecret;
     const cookieOptions = { httpOnly: true, secure: true, sameSite: "Lax", path: "/", maxAge: COOKIE_MAX_AGE } as const;
 
-    const own = new Set(Object.values(cfg.mailboxes).map(m => bareAddress(m.address)));
-    /** Recipients that are our own mailboxes are implied by the mailbox badge. */
+    const own = (address: string): boolean => mail.isOwn(address);
+    /** Recipients that are our own addresses are implied by the mailbox badge. */
     const shown = (m: MessageView): MessageView => ({
         ...m,
-        to: m.to.filter(a => !own.has(bareAddress(a))),
-        cc: m.cc.filter(a => !own.has(bareAddress(a))),
+        to: m.to.filter(a => !own(a)),
+        cc: m.cc.filter(a => !own(a)),
     });
 
     /** Mailboxes a session can send from: every one in its scope but the catch-all. */
@@ -210,8 +210,8 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const session = c.get("session");
         const filter = inboxFilter(c);
         const threads = await mail.listThreads({ mailbox: filter.mailbox || undefined, status: filter.status as ThreadStatus, limit: 200 }, session.scope);
-        const mailboxes = mail.listMailboxes(session.scope).map(m => m.id);
-        return V.threadList(threads, { mailboxes, domains: domainsOf(session), filter, own, current });
+        const accounts = await mail.listAccounts(session.scope);
+        return V.threadList(threads, { accounts, accountOf: t => mail.accountOf(t), domains: domainsOf(session), filter, own, current });
     };
 
     app.get("/inbox", async c => page(c, S.navInbox, V.inboxPage(await threadList(c, null), null), "inbox"));
@@ -225,13 +225,14 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
             thread = await mail.requireThread(id, session.scope);
         }
         const { messages, context, contacts } = await mail.getThread(id, session.scope);
-        const people = thread.participants.filter(p => !own.has(p));
+        const people = thread.participants.filter(p => !own(p));
         const entries = await Promise.all(messages.map(async m => ({
             at: m.date,
             view: m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id)) : V.messageBubble(shown(m), people.length > 1),
         })));
-        const reply = { allowed: senders(session).some(m => m.id === thread.mailbox), replyAll: people.length > 1 };
-        return { thread, view: V.threadView(thread, entries, { context, contacts }, { back, filter: inboxFilter(c), own, reply }) };
+        const account = mail.accountOf(thread);
+        const reply = { allowed: account !== CATCHALL && (thread.mailbox === CATCHALL || senders(session).some(m => m.id === thread.mailbox)), replyAll: people.length > 1 };
+        return { thread, view: V.threadView(thread, entries, { context, contacts }, { back, filter: inboxFilter(c), own, account, reply }) };
     };
 
     app.get("/threads/:id", async c => {

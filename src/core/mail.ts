@@ -98,6 +98,7 @@ export class Mail {
     readonly provider: MailProvider;
     readonly cfg: InboxerConfig;
     private readonly ownAddresses: Set<string>;
+    private readonly domains: Set<string>;
     private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
     private readonly files: AttachmentFiles;
 
@@ -106,6 +107,7 @@ export class Mail {
         this.provider = provider;
         this.cfg = cfg;
         this.ownAddresses = new Set(Object.values(cfg.mailboxes).map(m => bareAddress(m.address)));
+        this.domains = new Set(Object.values(cfg.mailboxes).map(m => domainOf(m.address)));
         this.files = new AttachmentFiles(cfg.dataDir);
     }
 
@@ -114,6 +116,30 @@ export class Mail {
             ...Object.entries(this.cfg.mailboxes).map(([id, m]) => ({ id, address: m.address, name: m.name })),
             { id: CATCHALL, address: "*", name: "Catch-all" },
         ].filter(m => reaches(scope, m.id));
+    }
+
+    /** A configured mailbox address or any other address on its domains, such as one the catch-all received. */
+    isOwn(address: string): boolean {
+        const bare = bareAddress(address);
+        return this.ownAddresses.has(bare) || this.domains.has(domainOf(bare));
+    }
+
+    /** The first address on our domains that is not a configured mailbox: the one a catch-all message was written to. */
+    private catchAllAddress(addresses: string[]): string | null {
+        return addresses.map(bareAddress).find(a => this.domains.has(domainOf(a)) && !this.ownAddresses.has(a)) ?? null;
+    }
+
+    /** The account a thread belongs to: its mailbox or, in the catch-all, the address it was written to. */
+    accountOf(thread: Thread): string {
+        return thread.mailbox === CATCHALL ? this.catchAllAddress(thread.participants) ?? CATCHALL : thread.mailbox;
+    }
+
+    /** Mailboxes in scope, with the catch-all split into the addresses it has received mail for. */
+    async listAccounts(scope: Scope): Promise<string[]> {
+        const mailboxes = this.listMailboxes(scope).map(m => m.id).filter(id => id !== CATCHALL);
+        if (!reaches(scope, CATCHALL)) return mailboxes;
+        const caught = (await this.store.allThreads()).filter(t => t.mailbox === CATCHALL).map(t => this.accountOf(t));
+        return [...mailboxes, ...[...new Set(caught)].sort()];
     }
 
     // Out of scope reads as missing, so a scoped token cannot probe other mailboxes.
@@ -147,7 +173,10 @@ export class Mail {
         return CATCHALL;
     }
 
-    private sendingMailbox(id: string): MailboxConfig {
+    /** Who sends for `id`; the catch-all answers as `address`, with the name and signature of a mailbox on that domain. */
+    private sendingMailbox(id: string, address: string | null): MailboxConfig {
+        const peer = id === CATCHALL && address ? Object.values(this.cfg.mailboxes).find(m => domainOf(m.address) === domainOf(address)) : undefined;
+        if (peer && address) return { name: peer.name, address: bareAddress(address), signatureText: peer.signatureText, signatureHtml: peer.signatureHtml };
         const mailbox = this.cfg.mailboxes[id];
         if (!mailbox) throw new InvalidRequestError(`Mailbox "${id}" cannot send (configured: ${Object.keys(this.cfg.mailboxes).join(", ")})`);
         return mailbox;
@@ -189,7 +218,7 @@ export class Mail {
                     participants,
                     at: inbound.receivedAt,
                 },
-                this.ownAddresses,
+                address => this.isOwn(address),
                 this.cfg.threadWindowDays,
             );
             const message: Message = {
@@ -275,7 +304,7 @@ export class Mail {
         const threads = (await this.store.allThreads()).filter(t => {
             if (!reaches(scope, t.mailbox)) return false;
             if (byMeta && !byMeta(t.id, t.participants)) return false;
-            if (input.mailbox && t.mailbox !== input.mailbox) return false;
+            if (input.mailbox && t.mailbox !== input.mailbox && this.accountOf(t) !== input.mailbox) return false;
             if (input.label && !t.labels[input.label]) return false;
             if (input.since && t.last_at < input.since) return false;
             if (status === "archived") return t.archived;
@@ -313,7 +342,7 @@ export class Mail {
 
     /** The thread's own context and the contacts of its external participants that have one. */
     async contextOf(thread: Thread): Promise<{ context: Context | null; contacts: Contact[] }> {
-        const external = thread.participants.filter(p => !this.ownAddresses.has(p));
+        const external = thread.participants.filter(p => !this.isOwn(p));
         const contacts = (await Promise.all(external.map(p => this.store.getContact(p)))).filter((c): c is Contact => !!c);
         return { context: await this.store.getThreadContext(thread.id), contacts };
     }
@@ -417,14 +446,17 @@ export class Mail {
     private replyDefaults(original: Message, given: { mailbox?: string; to?: string[] }, replyAll: boolean) {
         const mailbox = given.mailbox ?? original.mailbox;
         const to = given.to ?? (original.direction === "in" ? (original.reply_to.length ? original.reply_to : [original.from]) : original.to);
-        const already = new Set([bareAddress(this.sendingMailbox(mailbox).address), ...to.map(bareAddress)]);
+        const caught = mailbox === CATCHALL ? this.catchAllAddress(original.direction === "out" ? [original.from] : [...original.to, ...original.cc]) : null;
+        const sender = this.sendingMailbox(mailbox, caught);
+        const already = new Set([bareAddress(sender.address), ...to.map(bareAddress)]);
         const cc = replyAll ? [...original.to, ...original.cc].filter(a => !already.has(bareAddress(a))) : [];
-        return { mailbox, to, cc, subject: replySubject(original.subject) };
+        return { mailbox, sender, to, cc, subject: replySubject(original.subject) };
     }
 
     private async createDraftUnlocked(input: CreateDraftInput, actor: Actor): Promise<Message> {
         const now = new Date().toISOString();
         let mailbox: string;
+        let sender: MailboxConfig;
         let to: string[];
         let cc = input.cc ?? [];
         let subject: string;
@@ -436,6 +468,7 @@ export class Mail {
             const original = await this.requireMessage(input.replyToId, actor.scope);
             const defaults = this.replyDefaults(original, input, !!input.replyAll && !input.cc);
             mailbox = defaults.mailbox;
+            sender = defaults.sender;
             to = defaults.to;
             if (!input.cc) cc = defaults.cc;
             subject = input.subject ?? defaults.subject;
@@ -447,11 +480,11 @@ export class Mail {
             if (!input.to?.length) throw new InvalidRequestError("to is required when not replying");
             if (input.subject === undefined) throw new InvalidRequestError("subject is required when not replying");
             mailbox = input.mailbox;
+            sender = this.sendingMailbox(mailbox, null);
             to = input.to;
             subject = input.subject;
             threadId = nid();
         }
-        const sender = this.sendingMailbox(mailbox);
         if (!reaches(actor.scope, mailbox)) throw new InvalidRequestError(`Mailbox "${mailbox}" is not available to ${actor.name}`);
 
         const draft: Message = {
@@ -650,7 +683,7 @@ export class Mail {
      */
     private async sendDraftUnlocked(id: string, actor: Actor): Promise<Message> {
         const draft = await this.requireDraft(id, actor.scope);
-        const sender = this.sendingMailbox(draft.mailbox);
+        const sender = this.sendingMailbox(draft.mailbox, draft.from);
         if (!draft.message_id) {
             draft.message_id = `<${randomUUID()}@${domainOf(sender.address)}>`;
             await this.store.putMessage(draft);

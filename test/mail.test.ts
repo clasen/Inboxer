@@ -131,10 +131,28 @@ describe("mail core", () => {
         assert.equal(await h.store.lookupMessageId("<rewritten@provider.test>"), sent.id);
     });
 
-    test("the catch-all cannot send", async () => {
-        h.provider.addInbound({ providerId: "x", to: ["unknown@inboxer.test"] });
+    test("the catch-all replies as the address it was written to, and starts nothing new", async () => {
+        h.provider.addInbound({ providerId: "x", to: ["Info <INFO@inboxer.test>"] });
         const id = await h.mail.ingest("x");
-        await assert.rejects(h.mail.createDraft({ replyToId: id, text: "hi" }, agent), /cannot send/);
+        const sent = await h.mail.reply(id, "hi", false, agent);
+        assert.deepEqual([sent.mailbox, sent.from, sent.to], [CATCHALL, `"Inboxer Support" <info@inboxer.test>`, ["Ana <ana@customer.test>"]]);
+        assert.equal(h.provider.sent[0]!.message.text, "hi\n\n-- Support");
+
+        h.provider.addInbound({ providerId: "y", to: ["someone@else.test"] });
+        await assert.rejects(h.mail.createDraft({ replyToId: await h.mail.ingest("y"), text: "hi" }, agent), /cannot send/);
+        await assert.rejects(h.mail.createDraft({ mailbox: CATCHALL, to: ["x@y.test"], subject: "s", text: "t" }, agent), /cannot send/);
+    });
+
+    test("catch-all threads are grouped by the address they were written to, never threaded by it", async () => {
+        h.provider.addInbound({ providerId: "a", to: ["info@inboxer.test"], from: "ana@customer.test", subject: "Hello" });
+        h.provider.addInbound({ providerId: "b", to: ["info@inboxer.test"], from: "bob@other.test", subject: "Hello" });
+        h.provider.addInbound({ providerId: "c", to: ["sales@inboxer.test"], from: "carl@customer.test", subject: "Quote" });
+        const [a, b, c] = await Promise.all(["a", "b", "c"].map(async p => h.store.requireMessage(await h.mail.ingest(p))));
+        assert.notEqual(a!.thread_id, b!.thread_id);
+        assert.deepEqual(await h.mail.listAccounts(null), ["support", "feedback", "info@inboxer.test", "sales@inboxer.test"]);
+        assert.deepEqual(await h.mail.listAccounts(feedbackBot.scope), ["feedback"]);
+        const sales = await h.mail.listThreads({ status: "all", mailbox: "sales@inboxer.test" }, null);
+        assert.deepEqual(sales.map(t => [t.id, h.mail.accountOf(t)]), [[c!.thread_id, "sales@inboxer.test"]]);
     });
 
     test("search is accent and case insensitive and filters by mailbox", async () => {

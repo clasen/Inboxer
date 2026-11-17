@@ -2,7 +2,7 @@ import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import { bareAddress } from "../core/address.ts";
 import type { MessageView } from "../core/mail.ts";
-import type { Contact, Context, Message, Session, Thread } from "../types.ts";
+import { CATCHALL, type Contact, type Context, type Message, type Session, type Thread } from "../types.ts";
 import { ASSETS } from "./assets.ts";
 import { S } from "./strings.ts";
 
@@ -195,8 +195,13 @@ export function signIn(token: string, valid: boolean): View {
 </div>`;
 }
 
-function mailboxBadge(mailbox: string): View {
-    return h`<span class="badge mailbox">${mailbox}</span>`;
+/** An account by its mailbox id, or by the local part of an address the catch-all received. */
+function mailboxBadge(account: string): View {
+    return h`<span class="badge mailbox">${account.includes("@") ? account.slice(0, account.lastIndexOf("@")) : account}</span>`;
+}
+
+function draftAccount(d: Message): string {
+    return d.mailbox === CATCHALL ? bareAddress(d.from) : d.mailbox;
 }
 
 const PREVIEWABLE = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
@@ -290,7 +295,7 @@ export function draftCard(d: Message): View {
     return h`<article class="card draft" id="draft-${d.id}">
   <div class="meta">
     <span class="badge draft">${S.draft}</span>
-    ${mailboxBadge(d.mailbox)}
+    ${mailboxBadge(draftAccount(d))}
     <span>${d.edited_by_human ? S.editedByHuman : S.byAgent} · ${formatDate(d.created_at)}</span>
   </div>
   <div class="draft-head">
@@ -322,7 +327,7 @@ export function draftEditor(d: Message, form: DraftForm, conflict: Message | nul
   <div class="grabber" aria-hidden="true"></div>
   <div class="drop-hint">${S.dropFiles}</div>
   <button type="button" class="icon-btn sheet-close" data-close aria-label="${S.close}">${icon("close")}</button>
-  <div class="sheet-head"><span class="badge draft">${S.draft}</span>${mailboxBadge(d.mailbox)}</div>
+  <div class="sheet-head"><span class="badge draft">${S.draft}</span>${mailboxBadge(draftAccount(d))}</div>
   ${when(d.note, () => h`<div class="note">${d.note}</div>`)}
   ${when(conflict, () => h`<div class="sheet-conflict">
     <p class="warn">${S.conflictTitle}</p>
@@ -405,7 +410,7 @@ export function inboxQuery(filter: InboxFilter): string {
 }
 
 /** The thread list; on a wide screen it stays beside the open thread. */
-export function threadList(threads: Thread[], opts: { mailboxes: string[]; domains: string[]; filter: InboxFilter; own: Set<string>; current: string | null }): View {
+export function threadList(threads: Thread[], opts: ThreadListOptions & { domains: string[] }): View {
     const { filter } = opts;
     const tab = (status: string, label: string) =>
         h`<a class="chip" href="/inbox?${inboxQuery({ ...filter, status })}" ${raw(filter.status === status ? 'aria-current="page"' : "")}>${label}</a>`;
@@ -415,9 +420,9 @@ export function threadList(threads: Thread[], opts: { mailboxes: string[]; domai
     <form class="filters" method="get" action="/inbox">
       <input type="hidden" name="status" value="${filter.status}">
       <nav class="chips" aria-label="${S.filter}">${tab("unanswered", S.filterPending)}${tab("all", S.filterAll)}${tab("archived", S.filterArchived)}</nav>
-      ${when(opts.mailboxes.length > 1, () => h`<span class="select"><select name="mailbox" aria-label="${S.allMailboxes}" onchange="this.form.submit()">
+      ${when(opts.accounts.length > 1, () => h`<span class="select"><select name="mailbox" aria-label="${S.allMailboxes}" onchange="this.form.submit()">
         <option value="">${S.allMailboxes}</option>
-        ${join(opts.mailboxes.map(m => h`<option value="${m}" ${raw(m === filter.mailbox ? "selected" : "")}>${m}</option>`))}
+        ${join(opts.accounts.map(m => h`<option value="${m}" ${raw(m === filter.mailbox ? "selected" : "")}>${m}</option>`))}
       </select></span>`)}
     </form>
   </header>
@@ -425,16 +430,25 @@ export function threadList(threads: Thread[], opts: { mailboxes: string[]; domai
 </section>`;
 }
 
-function threadRow(t: Thread, opts: { mailboxes: string[]; filter: InboxFilter; own: Set<string>; current: string | null }): View {
-    const people = t.participants.filter(p => !opts.own.has(p));
+interface ThreadListOptions {
+    /** Mailbox ids and catch-all addresses, as filter values. */
+    accounts: string[];
+    accountOf: (t: Thread) => string;
+    filter: InboxFilter;
+    own: (address: string) => boolean;
+    current: string | null;
+}
+
+function threadRow(t: Thread, opts: ThreadListOptions): View {
+    const people = t.participants.filter(p => !opts.own(p));
     return h`<a class="row ${t.unread ? "unread" : ""}" href="/threads/${t.id}?${inboxQuery(opts.filter)}" ${raw(t.id === opts.current ? 'aria-current="page"' : "")}>
   <span class="avatar" aria-hidden="true">${initials(people[0] ?? t.mailbox)}</span>
   <span class="row-main">
     <span class="row-top"><span class="who">${people.join(", ") || t.mailbox}</span><time datetime="${t.last_at}">${formatDate(t.last_at)}</time></span>
     <span class="row-subject">${t.subject || "—"}</span>
-    ${when(t.has_draft || opts.mailboxes.length > 1 || t.unread, () => h`<span class="row-tags">
+    ${when(t.has_draft || opts.accounts.length > 1 || t.unread, () => h`<span class="row-tags">
       ${when(t.has_draft, () => h`<span class="badge draft">${S.hasDraft}</span>`)}
-      ${when(opts.mailboxes.length > 1, () => mailboxBadge(t.mailbox))}
+      ${when(opts.accounts.length > 1, () => mailboxBadge(opts.accountOf(t)))}
       ${when(t.unread, () => h`<span class="dot" title="${S.unread}"></span>`)}
     </span>`)}
   </span>
@@ -452,11 +466,11 @@ export interface ThreadEntry {
 }
 
 /** The conversation, oldest first, with day separators, a reply box and the context panel. */
-export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextView, opts: { back: string; filter: InboxFilter; own: Set<string>; reply: { allowed: boolean; replyAll: boolean } }): View {
+export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextView, opts: { back: string; filter: InboxFilter; own: (address: string) => boolean; account: string; reply: { allowed: boolean; replyAll: boolean } }): View {
     const query = inboxQuery(opts.filter);
     const rows = contextRows(ctx);
-    const people = thread.participants.filter(p => !opts.own.has(p));
-    const title = h`<span class="thread-subject">${thread.subject || "—"}</span><span class="thread-meta">${[...people, thread.mailbox].join(" · ")}</span>`;
+    const people = thread.participants.filter(p => !opts.own(p));
+    const title = h`<span class="thread-subject">${thread.subject || "—"}</span><span class="thread-meta">${[...people, opts.account].join(" · ")}</span>`;
     const items: View[] = [];
     let day = "";
     for (const entry of entries) {

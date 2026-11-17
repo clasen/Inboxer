@@ -146,7 +146,7 @@ With roster's default isolation the site runs in its own process, so the databas
 | `ui.undoSec` | Seconds a Send or Discard in the UI waits before it happens, with an Undo button |
 | `ui.maxUploadMb` | Largest file a reviewer can attach to a draft |
 
-`mailboxes` is an object keyed by id rather than an array, so a per-environment override can replace one mailbox without repeating the others. Mail sent to an address that matches no mailbox lands in the reserved `catchall` mailbox, which can be read but cannot send.
+`mailboxes` is an object keyed by id rather than an array, so a per-environment override can replace one mailbox without repeating the others. Mail sent to an address that matches no mailbox lands in the reserved `catchall` mailbox, grouped by that address. Replies go out from the address that was written to, with the name and signature of a mailbox on the same domain; the catch-all cannot start new mail.
 
 ## Providers
 
