@@ -412,7 +412,8 @@ export function inboxQuery(filter: InboxFilter): string {
 /** The thread list; on a wide screen it stays beside the open thread. */
 export function threadList(threads: Thread[], opts: ThreadListOptions & { domains: string[] }): View {
     const { filter } = opts;
-    const tab = (status: string, label: string) =>
+    const mailboxLabel = (m: string) => opts.domains.length === 1 ? m.replace(`@${opts.domains[0]}`, "") : m;
+    const tab =(status: string, label: string) =>
         h`<a class="chip" href="/inbox?${inboxQuery({ ...filter, status })}" ${raw(filter.status === status ? 'aria-current="page"' : "")}>${label}</a>`;
     return h`<section class="list">
   <header class="list-head">
@@ -422,7 +423,7 @@ export function threadList(threads: Thread[], opts: ThreadListOptions & { domain
       <nav class="chips" aria-label="${S.filter}">${tab("unanswered", S.filterPending)}${tab("all", S.filterAll)}${tab("archived", S.filterArchived)}</nav>
       ${when(opts.accounts.length > 1, () => h`<span class="select"><select name="mailbox" aria-label="${S.allMailboxes}" onchange="this.form.submit()">
         <option value="">${S.allMailboxes}</option>
-        ${join(opts.accounts.map(m => h`<option value="${m}" ${raw(m === filter.mailbox ? "selected" : "")}>${m}</option>`))}
+        ${join(opts.accounts.map(m => h`<option value="${m}" ${raw(m === filter.mailbox ? "selected" : "")}>${mailboxLabel(m)}</option>`))}
       </select></span>`)}
     </form>
   </header>
