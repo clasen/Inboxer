@@ -201,8 +201,9 @@ button.thread-title:hover { background: var(--soft); border: none; }
 }
 .composer textarea:focus { border-color: var(--focus); }
 .composer .send { width: 44px; height: 44px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
-.reply-all { flex-basis: 100%; display: flex; align-items: center; gap: 8px; padding: 2px 8px; font-family: var(--mono); font-size: .72rem; color: var(--muted); cursor: pointer; }
-.reply-all input { accent-color: var(--accent); }
+.reply-all { flex-basis: 100%; display: flex; align-items: center; gap: 8px; padding: 2px 0; font-family: var(--mono); font-size: .72rem; color: var(--muted); cursor: pointer; }
+/* Centered over the + button below it, which is 44px wide. */
+.reply-all input { width: 16px; height: 16px; margin: 0 0 0 14px; flex: none; accent-color: var(--accent); }
 
 /* Context: a side panel on a wide screen, a bottom sheet on a phone */
 .context-panel { display: none; background: var(--bg); }
