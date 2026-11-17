@@ -512,7 +512,9 @@ export function devicesPage(sessions: Session[], currentId: string): View {
         <span class="row-by">${S.signedIn} ${formatDate(s.created_at)} · ${S.createdBy} ${s.created_by}</span>
       </span>
     </span>
-    ${when(s.id !== currentId, () => h`<button class="danger" hx-post="/devices/${s.id}/revoke" hx-target="#session-${s.id}" hx-swap="delete">${S.revoke}</button>`)}
+    ${s.id === currentId
+        ? h`<form method="post" action="/logout"><button class="danger">${S.logout}</button></form>`
+        : h`<button class="danger" hx-post="/devices/${s.id}/revoke" hx-target="#session-${s.id}" hx-swap="delete">${S.revoke}</button>`}
   </div>`)) : h`<p class="empty">${S.devicesEmpty}</p>`}
 </section>`;
 }

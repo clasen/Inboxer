@@ -396,6 +396,7 @@ textarea {
 .setting label { font-weight: 500; }
 .row.device:hover { background: none; }
 .row.device .avatar { color: var(--muted); }
+.row.device form { display: contents; }
 .row.device .danger { align-self: center; padding: 0; height: auto; border: none; background: none; }
 .row.device .danger:hover { text-decoration: underline; }
 .setting .danger, .setting .danger:hover { padding: 0; height: auto; border: none; background: none; }

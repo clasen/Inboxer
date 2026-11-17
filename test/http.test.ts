@@ -186,6 +186,9 @@ describe("http", () => {
         const client = await mcpClient(h);
         const { data: sessions } = await call(client, "list_sessions");
         assert.equal(sessions.length, 2);
+        const devices = await (await req(h, "/devices", { cookie: phone })).text();
+        assert.equal(devices.match(/action="\/logout"/g)?.length, 1, "own session offers log out");
+        assert.equal(devices.match(/\/revoke"/g)?.length, 1, "other session offers revoke");
         await req(h, "/logout", { method: "POST", cookie: phone });
         assert.equal((await req(h, "/", { cookie: phone })).status, 401);
         assert.equal((await req(h, "/", { cookie: laptop })).status, 200);
