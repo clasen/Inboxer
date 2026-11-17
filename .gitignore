@@ -3,3 +3,4 @@ dist
 config/index.secret.cjs
 *.db
 *.db-*
+.DS_Store
