@@ -195,13 +195,17 @@ Two domains are involved, and they are configured separately:
 
 The app's host name does not have to match the addresses. A name like `inboxer.` avoids confusion with mail-server hosts such as `mail.`. The steps below use these two examples.
 
-1. **Deploy Inboxer first.** Point `inboxer.example.com` at your server, serve it over HTTPS (roster-server issues certificates on its own; otherwise use your reverse proxy), and set `publicUrl` to that URL. The webhook and login links depend on it.
-2. **Add the domain in Resend.** In *Domains*, add `example.com`. Resend lists the DNS records to create at your DNS provider: the SPF and DKIM records for sending, and the MX record for receiving. Enable receiving for the domain. Wait until Resend shows the domain as verified.
-3. **Mind the MX switch.** Once the MX record points to Resend, every address of the domain is delivered to Resend and no longer to your previous mail host or forwarding rules. Mail to addresses you did not configure still reaches Inboxer, in the `catchall` mailbox. If you need to keep the root domain on another host, use a subdomain such as `help.example.com` for Inboxer's addresses.
-4. **Add DMARC.** Create a TXT record at `_dmarc.example.com`, for example `v=DMARC1; p=none; rua=mailto:dmarc@example.com`, and tighten the policy once reports look clean.
+0. **Sign up at Resend and add the domain.** Create an account at [resend.com](https://resend.com). In *Domains*, add `example.com` and enable receiving for it. Resend then lists the four DNS records below with the exact values for your account. Copy each value from there: keys and regions differ per domain, and the ones below are examples.
+1. **TXT — DKIM.** Name `resend._domainkey`, value the public key Resend shows (`p=MIGfMA0GCSq…`). It signs outgoing mail.
+2. **MX and TXT — `send`.** The `send` subdomain handles bounces and SPF for outgoing mail. MX `send` → `feedback-smtp.us-east-1.amazonses.com`, priority `10`. TXT `send` → `v=spf1 include:amazonses.com ~all`.
+3. **TXT — DMARC.** Name `_dmarc`, value `v=DMARC1; p=none; rua=mailto:dmarc@example.com`. Tighten the policy once reports look clean. Resend does not require this record, but mailbox providers increasingly do.
+4. **MX — receiving.** Name `@` (the domain itself), value `inbound-smtp.us-east-1.amazonaws.com`, priority `10`. From then on every address of the domain is delivered to Resend and no longer to your previous mail host or forwarding rules; mail to addresses you did not configure lands in Inboxer's `catchall` mailbox. To keep the root domain on another host, put Inboxer's addresses on a subdomain such as `help.example.com` and add this MX there.
+
+   Wait until Resend shows the domain as verified. That usually takes minutes, sometimes hours while DNS propagates.
 5. **Create an API key.** In *API Keys*, create a key with full access: Inboxer reads received and sent emails, not just sends. Put it in `provider.apiKey`.
-6. **Create the webhook.** In *Webhooks*, add an endpoint at `https://inboxer.example.com/webhooks/resend` with the `email.received`, `email.sent`, `email.delivered`, `email.bounced`, `email.failed` and `email.suppressed` events. Copy its signing secret into `provider.webhookSecret`.
-7. **Restart and test.** Restart Inboxer so it loads the secrets. Send an email from an outside account to `support@example.com`. Within seconds it should appear in the UI's Inbox and in `list_threads`. Resend's webhook page shows each delivery and Inboxer's response; a `401` means the signing secret is wrong.
+6. **Deploy Inboxer.** Point `inboxer.example.com` at your server, serve it over HTTPS (roster-server issues certificates on its own; otherwise use your reverse proxy), and set `publicUrl` to that URL. The webhook and login links depend on it.
+7. **Create the webhook.** In *Webhooks*, add an endpoint at `https://inboxer.example.com/webhooks/resend` with the `email.received`, `email.sent`, `email.delivered`, `email.bounced`, `email.failed` and `email.suppressed` events. Copy its signing secret into `provider.webhookSecret`.
+8. **Restart and test.** Restart Inboxer so it loads the secrets. Send an email from an outside account to `support@example.com`. Within seconds it should appear in the UI's Inbox and in `list_threads`. Resend's webhook page shows each delivery and Inboxer's response; a `401` means the signing secret is wrong.
 
 Inbound webhooks carry no body, so Inboxer fetches each message from the receiving API. The webhook answers `500` when processing fails, so Resend retries; processing is idempotent by Resend id.
 
