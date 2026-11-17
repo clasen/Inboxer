@@ -108,8 +108,9 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     };
 
     app.get("/", async c => {
-        const drafts = await mail.listDrafts(undefined, c.get("session").scope);
-        return page(c, S.navDrafts, V.inboxPage(V.draftList(drafts, null), null), "drafts");
+        const session = c.get("session");
+        const drafts = await mail.listDrafts(undefined, session.scope);
+        return page(c, S.navDrafts, V.inboxPage(V.draftList(drafts, domainsOf(session), null), null), "drafts");
     });
 
     app.get("/drafts/:id", async c => {
@@ -118,7 +119,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         if (draft.status !== "draft") return c.redirect(`/threads/${draft.thread_id}?status=all`, 303);
         const { thread, view } = await threadPane(c, draft.thread_id, "/");
         const drafts = await mail.listDrafts(undefined, session.scope);
-        return page(c, thread.subject || S.navDrafts, V.inboxPage(V.draftList(drafts, draft.id), view), "drafts", 200, true);
+        return page(c, thread.subject || S.navDrafts, V.inboxPage(V.draftList(drafts, domainsOf(session), draft.id), view), "drafts", 200, true);
     });
 
     app.get("/drafts/:id/card", async c => c.html(await draftView(c, c.req.param("id"))));

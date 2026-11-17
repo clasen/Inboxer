@@ -75,7 +75,7 @@ body.full .tabbar { display: none; }
         display: flex; flex-direction: column; gap: 4px;
         padding: 20px 14px; border-right: 1px solid var(--line);
     }
-    .brand { font-size: 20px; font-weight: 700; letter-spacing: -0.03em; padding: 0 12px; }
+    .brand { font-size: 21px; line-height: 1.2; font-weight: 700; letter-spacing: -0.03em; text-transform: lowercase; padding: 0 12px; }
     .brand span { color: var(--accent); }
     .new-mail { display: flex; align-items: center; justify-content: center; gap: 8px; height: 44px; border-radius: 12px; margin: 16px 0 14px; }
     .side-nav { display: flex; flex-direction: column; gap: 2px; }
@@ -103,8 +103,9 @@ body.full .tabbar { display: none; }
     body.context-open .split .list { display: none; }
 }
 
-.list-head { padding: 18px 16px 12px; }
+.list-head { padding: 20px 16px 12px; }
 .list-head h1 { font-size: 21px; line-height: 1.2; letter-spacing: -0.02em; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list-head small { font-size: 13px; font-weight: 500; letter-spacing: 0; color: var(--muted); margin-left: 4px; }
 .filters { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .chips { display: flex; flex: none; gap: 8px; }
 .filters .select { min-width: 0; }

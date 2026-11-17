@@ -369,10 +369,17 @@ export function draftDone(id: string, text: string): View {
     return h`<article class="card notice" id="draft-${id}">${text}</article>`;
 }
 
+/** A list's title: the session's sending domains, with the list's name beside them. */
+function listTitle(domains: string[], label: string): View {
+    return domains.length
+        ? h`<h1>${domains.join(" · ")} <small>${label}</small></h1>`
+        : h`<h1>${label}</h1>`;
+}
+
 /** Drafts waiting for review, listed like the inbox; each opens its thread. */
-export function draftList(drafts: Message[], current: string | null): View {
+export function draftList(drafts: Message[], domains: string[], current: string | null): View {
     return h`<section class="list">
-  <header class="list-head"><h1>${S.navDrafts}</h1></header>
+  <header class="list-head">${listTitle(domains, S.navDrafts)}</header>
   ${drafts.length ? join(drafts.map(d => h`<a class="row" href="/drafts/${d.id}" ${raw(d.id === current ? 'aria-current="page"' : "")}>
     <span class="avatar" aria-hidden="true">${initials(d.to[0] ?? d.mailbox)}</span>
     <span class="row-main">
@@ -404,7 +411,7 @@ export function threadList(threads: Thread[], opts: { mailboxes: string[]; domai
         h`<a class="chip" href="/inbox?${inboxQuery({ ...filter, status })}" ${raw(filter.status === status ? 'aria-current="page"' : "")}>${label}</a>`;
     return h`<section class="list">
   <header class="list-head">
-    <h1>${opts.domains.length ? opts.domains.join(" · ") : S.navInbox}</h1>
+    ${listTitle(opts.domains, S.navInbox)}
     <form class="filters" method="get" action="/inbox">
       <input type="hidden" name="status" value="${filter.status}">
       <nav class="chips" aria-label="${S.filter}">${tab("unanswered", S.filterPending)}${tab("all", S.filterAll)}${tab("archived", S.filterArchived)}</nav>
