@@ -15,6 +15,8 @@ const provider = new FakeProvider();
 const config = testConfig(dataDir);
 config.publicUrl = `http://localhost:${PORT}`;
 config.ui.undoSec = 5;
+const DOMAIN = "example.com";
+for (const mailbox of Object.values(config.mailboxes)) mailbox.address = mailbox.address.replace(/@.*/, `@${DOMAIN}`);
 const inboxer = createInboxer(config, { provider });
 await inboxer.ready;
 const h: Harness = { inboxer, provider, dataDir, close: async () => {} };
@@ -29,6 +31,7 @@ const call = async (name: string, args: Record<string, unknown>) => {
     return JSON.parse((res.content as { text: string }[])[0]!.text);
 };
 
+const inbound = (message: Parameters<FakeProvider["addInbound"]>[0]) => provider.addInbound({ to: [`support@${DOMAIN}`], ...message });
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
 const receive = async (...ids: string[]) => webhook(h, ids.map(providerId => ({ type: "received" as const, providerId })));
 const file = (providerId: string, id: string, filename: string, content_type: string, body: string): AttachmentMeta => {
@@ -39,20 +42,20 @@ const threadOf = async (subject: string) =>
     (await call("list_threads", { status: "all" })).find((t: { subject: string }) => t.subject === subject);
 const lastMessage = async (threadId: string) => (await call("get_thread", { thread_id: threadId })).messages.at(-1);
 
-provider.addInbound({
+inbound({
     providerId: "laura-1", from: "Laura Pérez <laura@acme.io>", cc: ["finance@acme.io"], subject: "Invoice #2041 charged twice",
     text: "Hi,\n\nwe were charged twice for invoice #2041 this month, once on the 1st and again on the 3rd. Can you check and refund the duplicate?\n\nThanks,\nLaura",
     receivedAt: ago(60 * 50),
 });
-provider.addInbound({
+inbound({
     providerId: "tomas-1", from: "Tomás Kahn <tomas@kahn.dev>", subject: "Can't log in after password reset",
     text: "The link says expired every time I try, even right after requesting it. I'm on Safari 18.", receivedAt: ago(30),
 });
-provider.addInbound({
-    providerId: "northwind-1", from: "Northwind Retail <buy@northwind.test>", to: ["feedback@inboxer.test"], subject: "Volume pricing for 40 seats",
+inbound({
+    providerId: "northwind-1", from: "Northwind Retail <buy@northwind.test>", to: [`feedback@${DOMAIN}`], subject: "Volume pricing for 40 seats",
     text: "We're evaluating for Q1 and would like a quote for 40 seats, billed yearly.", receivedAt: ago(60 * 26),
 });
-provider.addInbound({
+inbound({
     providerId: "marta-1", from: "Marta Soler <marta@soler.test>", subject: "Export to CSV drops the last column",
     text: "Attached two files, one from before the update and one from after. The \"notes\" column is gone in the new one.",
     attachments: [
@@ -61,7 +64,7 @@ provider.addInbound({
     ],
     receivedAt: ago(60 * 75),
 });
-provider.addInbound({
+inbound({
     providerId: "old-1", from: "Diego Ruiz <diego@ruiz.test>", subject: "Thanks for the quick fix",
     text: "All good now, you can close this one.", receivedAt: ago(60 * 24 * 6),
 });
@@ -69,7 +72,7 @@ await receive("laura-1", "tomas-1", "northwind-1", "marta-1", "old-1");
 
 const laura = await threadOf("Invoice #2041 charged twice");
 await call("reply", { message_id: (await lastMessage(laura.id)).id, text: "Hi Laura, thanks for flagging this. I can see both charges on our side and asked billing to reverse the second one." });
-provider.addInbound({
+inbound({
     providerId: "laura-2", from: "Laura Pérez <laura@acme.io>", cc: ["finance@acme.io"], subject: "Re: Invoice #2041 charged twice",
     inReplyTo: "<laura-1@customer.test>", references: ["<laura-1@customer.test>"],
     text: "Thanks. It's been three days and nothing yet, any update? Our finance team needs to close the month on Friday.",
