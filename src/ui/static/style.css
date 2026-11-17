@@ -38,7 +38,7 @@ h1 { font-size: 2rem; line-height: 1.1; letter-spacing: -0.04em; font-weight: 70
 .sidebar { display: none; }
 body.app { padding-bottom: calc(var(--tabbar) + env(safe-area-inset-bottom)); }
 body.app.full { padding-bottom: 0; }
-.page { max-width: 760px; margin: 0 auto; padding: 24px 16px 32px; }
+.page { max-width: 760px; padding: 24px 16px 32px; }
 
 .tabbar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
