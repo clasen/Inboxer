@@ -55,12 +55,15 @@ For roster-server, return `inboxer.handler` from the `SiteFactory` and register 
 
 Keep two domains apart: the app runs on its own host, e.g. `inboxer.example.com` (`A`/`AAAA` + HTTPS, the `publicUrl`), while the addresses live on the mail domain, e.g. `support@example.com` (`MX` to Resend + SPF, DKIM, DMARC).
 
-1. Deploy Inboxer over HTTPS at `publicUrl` first.
-2. In Resend, add the domain, create its SPF, DKIM and MX records, and enable receiving. The MX switch moves the whole domain's mail to Resend; use a subdomain to keep the root elsewhere.
-3. Add a DMARC TXT record at `_dmarc.<domain>`.
-4. Create a full-access API key (Inboxer reads emails, not only sends) → `provider.apiKey`.
-5. Create a webhook at `<publicUrl>/webhooks/resend` for `email.received`, `email.sent`, `email.delivered`, `email.bounced`, `email.failed`, `email.suppressed` → its signing secret is `provider.webhookSecret`.
-6. Restart and send a test email from outside. A webhook `401` means a wrong signing secret.
+0. Sign up at Resend, add the domain in *Domains* and enable receiving. Resend lists the four records below with the account's exact values; copy them from there, since keys and regions vary. The values here are examples.
+1. TXT — DKIM: `resend._domainkey` → the public key Resend shows (`p=MIGfMA0GCSq…`).
+2. MX and TXT — `send` (bounces and SPF): MX `send` → `feedback-smtp.us-east-1.amazonses.com`, priority `10`; TXT `send` → `v=spf1 include:amazonses.com ~all`.
+3. TXT — DMARC: `_dmarc` → `v=DMARC1; p=none; rua=mailto:dmarc@example.com`.
+4. MX — receiving: `@` → `inbound-smtp.us-east-1.amazonaws.com`, priority `10`. This moves the whole domain's mail to Resend; unknown addresses land in `catchall`. To keep the root elsewhere, put the addresses and this MX on a subdomain. Wait until Resend shows the domain verified.
+5. Create a full-access API key (Inboxer reads emails, not only sends) → `provider.apiKey`.
+6. Deploy Inboxer over HTTPS at `publicUrl`.
+7. Create a webhook at `<publicUrl>/webhooks/resend` for `email.received`, `email.sent`, `email.delivered`, `email.bounced`, `email.failed`, `email.suppressed` → its signing secret is `provider.webhookSecret`.
+8. Restart and send a test email from outside. A webhook `401` means a wrong signing secret.
 
 Missed webhooks are recovered by the periodic sync.
 
