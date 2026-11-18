@@ -33,6 +33,16 @@ document.addEventListener("keydown", event => {
     if (event.key === "Escape") document.body.classList.remove("context-open");
 });
 
+// Cmd+Enter (Ctrl+Enter off a Mac) in a message box presses its form's send button.
+document.addEventListener("keydown", event => {
+    if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey) || !(event.target instanceof HTMLTextAreaElement)) return;
+    // A click, so htmx posts the button's own name and value along with the form.
+    const send = event.target.form?.querySelector("button[type=submit].primary");
+    if (!send) return;
+    event.preventDefault();
+    send.click();
+});
+
 // Links and forms load the next page with htmx and swap only the body, so scripts and styles stay loaded.
 // The body's classes come from the new page, and an error page shows instead of nothing.
 // Back and forward reload the page (see htmx-config), so a page is never restored with stale mail.
