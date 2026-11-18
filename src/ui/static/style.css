@@ -407,3 +407,8 @@ textarea {
 .centered { max-width: 360px; margin: 20vh auto 0; padding: 0 16px; text-align: center; }
 .centered h1 { font-size: 1.75rem; }
 .empty { color: var(--muted); font-family: var(--mono); font-size: .8rem; border-top: 1px solid var(--line); padding: 48px 16px; text-align: center; }
+
+/* iOS zooms into a focused field whose text is under 16px, which pushes the page past the screen edges. */
+@media (pointer: coarse) {
+    :root :is(input, select, textarea) { font-size: 16px; }
+}
