@@ -7,10 +7,11 @@
     --soft: light-dark(#f1f1ef, #1f1f1e);
     --chip: light-dark(#e9e9e6, #333331);
     --surface: light-dark(#ffffff, #2e2e2c);
-    --mine: light-dark(#ffe6d6, #4a2e20);
-    --mine-line: light-dark(#ffd2b8, #5e3a28);
-    --accent: light-dark(#ff4d00, #ff7a3d);
-    --accent-text: light-dark(#c43d00, #ff8f5c);
+    /* --hue is set per instance on <html>, from its mail domains. */
+    --mine: light-dark(oklch(0.95 0.03 var(--hue)), oklch(0.33 0.045 var(--hue)));
+    --mine-line: light-dark(oklch(0.89 0.055 var(--hue)), oklch(0.4 0.06 var(--hue)));
+    --accent: light-dark(oklch(0.75 0.13 var(--hue)), oklch(0.78 0.11 var(--hue)));
+    --accent-text: light-dark(oklch(0.5 0.13 var(--hue)), oklch(0.83 0.09 var(--hue)));
     --focus: light-dark(#0a0a0a, #a3a39e);
     --primary-bg: light-dark(#0a0a0a, #ececea);
     --primary-fg: light-dark(#fbfbfa, #1f1f1e);
@@ -31,7 +32,7 @@
 body { margin: 0; background: var(--bg); color: var(--fg); }
 a { color: inherit; text-decoration: none; }
 h1 { font-size: 2rem; line-height: 1.1; letter-spacing: -0.04em; font-weight: 700; margin: 0 0 24px; }
-::selection { background: var(--accent); color: #fff; }
+::selection { background: var(--accent); color: #1f1f1e; }
 .icon { flex: none; }
 
 /* Shell: a tab bar on a phone, a sidebar on a wide screen */

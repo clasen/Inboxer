@@ -101,6 +101,8 @@ export class Mail {
     private readonly domains: Set<string>;
     private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
     private readonly files: AttachmentFiles;
+    /** Fires "change" after every write, so open pages can refresh. */
+    readonly changes = new EventTarget();
 
     constructor(store: Store, provider: MailProvider, cfg: InboxerConfig) {
         this.store = store;
@@ -109,6 +111,13 @@ export class Mail {
         this.ownAddresses = new Set(Object.values(cfg.mailboxes).map(m => bareAddress(m.address)));
         this.domains = new Set(Object.values(cfg.mailboxes).map(m => domainOf(m.address)));
         this.files = new AttachmentFiles(cfg.dataDir);
+    }
+
+    /** Runs `fn` in the store's write queue, then announces the change. */
+    private async write<T>(fn: () => Promise<T>): Promise<T> {
+        const result = await this.store.serialize(fn);
+        this.changes.dispatchEvent(new Event("change"));
+        return result;
     }
 
     listMailboxes(scope: Scope): { id: string; address: string; name: string }[] {
@@ -208,7 +217,7 @@ export class Mail {
     }
 
     private storeInbound(providerId: string, inbound: Awaited<ReturnType<MailProvider["getInbound"]>>): Promise<string> {
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             const existing = await this.store.lookupProviderId(this.provider.name, providerId);
             if (existing) return existing;
 
@@ -277,7 +286,7 @@ export class Mail {
 
     /** Status updates never move backwards: a late `sent` does not overwrite `delivered`. */
     applyStatus(providerId: string, status: DeliveryStatus, messageId: string | null): Promise<void> {
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             const id = await this.store.lookupProviderId(this.provider.name, providerId);
             if (!id) return;
             const message = await this.store.requireMessage(id);
@@ -365,7 +374,7 @@ export class Mail {
         const bare = bareAddress(address);
         if (!bare.includes("@")) throw new InvalidRequestError(`"${address}" is not an email address`);
         await this.requireContactAccess(bare, actor.scope);
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             const contact: Contact = { address: bare, ...this.merge(await this.store.getContact(bare), patch, actor) };
             await this.store.putContact(contact);
             await this.store.audit("contact.update", actor, bare, { ...patch });
@@ -374,7 +383,7 @@ export class Mail {
     }
 
     setThreadContext(threadId: string, patch: ContextPatch, actor: Actor): Promise<Context> {
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             await this.requireThread(threadId, actor.scope);
             const context = this.merge(await this.store.getThreadContext(threadId), patch, actor);
             await this.store.putThreadContext(threadId, context);
@@ -409,7 +418,7 @@ export class Mail {
     }
 
     private updateMessages(ids: string[], actor: Actor, action: string, change: (m: Message) => void): Promise<number> {
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             const messageIds = await this.resolveMessageIds(ids, actor.scope);
             const threads = new Set<string>();
             for (const id of messageIds) {
@@ -441,7 +450,7 @@ export class Mail {
     // Drafts and sending
 
     createDraft(input: CreateDraftInput, actor: Actor): Promise<Message> {
-        return this.store.serialize(() => this.createDraftUnlocked(input, actor));
+        return this.write(() => this.createDraftUnlocked(input, actor));
     }
 
     /** Who a reply to `replyToId` goes to and its subject, without creating anything. */
@@ -543,7 +552,7 @@ export class Mail {
      * human edited unless it passes `force`. A UI edit regenerates the HTML from the text at send time.
      */
     updateDraft(id: string, version: number, patch: DraftPatch, actor: Actor, force = false): Promise<Message> {
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             const draft = await this.requireDraft(id, actor.scope);
             if (draft.version !== version) throw new ConflictError(draft);
             if (draft.pending) throw new InvalidRequestError(`Draft ${id} is about to ${draft.pending.action}; undo it first`);
@@ -565,7 +574,7 @@ export class Mail {
     }
 
     discardDraft(id: string, actor: Actor): Promise<void> {
-        return this.store.serialize(() => this.discardDraftUnlocked(id, actor));
+        return this.write(() => this.discardDraftUnlocked(id, actor));
     }
 
     private async discardDraftUnlocked(id: string, actor: Actor): Promise<void> {
@@ -580,7 +589,7 @@ export class Mail {
 
     /** Attaching does not change `version`: it never conflicts with text edits in flight. */
     attach(id: string, file: { filename: string; contentType: string; body: Uint8Array }, actor: Actor): Promise<Message> {
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             const draft = await this.requireDraft(id, actor.scope);
             if (draft.pending) throw new InvalidRequestError(`Draft ${id} is about to ${draft.pending.action}; undo it first`);
             const meta: AttachmentMeta = {
@@ -600,7 +609,7 @@ export class Mail {
     }
 
     detach(id: string, attachmentId: string, actor: Actor): Promise<Message> {
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             const draft = await this.requireDraft(id, actor.scope);
             if (draft.pending) throw new InvalidRequestError(`Draft ${id} is about to ${draft.pending.action}; undo it first`);
             const index = draft.attachments.findIndex(a => a.id === attachmentId);
@@ -616,7 +625,7 @@ export class Mail {
 
     /** Starts the undo window for a send or discard. Calling it again keeps the first one. */
     schedule(id: string, action: PendingAction["action"], actor: Actor): Promise<Message> {
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             const draft = await this.requireDraft(id, actor.scope);
             if (!draft.pending) {
                 draft.pending = { action, at: new Date(Date.now() + this.cfg.ui.undoSec * 1000).toISOString(), by: actor.name };
@@ -629,7 +638,7 @@ export class Mail {
     }
 
     undo(id: string, actor: Actor): Promise<Message> {
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             const draft = await this.requireDraft(id, actor.scope);
             clearTimeout(this.timers.get(id));
             this.timers.delete(id);
@@ -667,7 +676,7 @@ export class Mail {
     /** A failed send leaves a plain pending draft, so the reviewer sees it was not sent. */
     private runPending(id: string): Promise<void> {
         this.timers.delete(id);
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             const draft = await this.store.getMessage(id);
             if (!draft || draft.status !== "draft" || !draft.pending) return;
             const { action, by } = draft.pending;
@@ -680,7 +689,7 @@ export class Mail {
     }
 
     sendDraft(id: string, actor: Actor): Promise<Message> {
-        return this.store.serialize(() => this.sendDraftUnlocked(id, actor));
+        return this.write(() => this.sendDraftUnlocked(id, actor));
     }
 
     /**
@@ -735,7 +744,7 @@ export class Mail {
 
     /** Direct send. If the provider fails, the message stays as a pending draft. */
     send(input: CreateDraftInput, actor: Actor): Promise<Message> {
-        return this.store.serialize(async () => {
+        return this.write(async () => {
             const draft = await this.createDraftUnlocked(input, actor);
             return this.sendDraftUnlocked(draft.id, actor);
         });

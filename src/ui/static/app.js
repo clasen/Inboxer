@@ -33,11 +33,72 @@ document.addEventListener("keydown", event => {
     if (event.key === "Escape") document.body.classList.remove("context-open");
 });
 
-// A thread opens at its latest message.
-document.addEventListener("DOMContentLoaded", () => {
+// Links and forms load the next page with htmx and swap only the body, so scripts and styles stay loaded.
+// The body's classes come from the new page, and an error page shows instead of nothing.
+// Back and forward reload the page (see htmx-config), so a page is never restored with stale mail.
+document.addEventListener("htmx:beforeSwap", event => {
+    if (!event.detail.boosted) return;
+    if (event.detail.xhr.status >= 400) {
+        event.detail.shouldSwap = true;
+        event.detail.isError = false;
+    }
+    document.body.className = /<body[^>]*class="([^"]*)"/.exec(event.detail.serverResponse)?.[1] ?? "";
+});
+
+document.addEventListener("htmx:afterSwap", event => {
+    if (event.detail.boosted) pageShown();
+});
+
+document.addEventListener("DOMContentLoaded", pageShown);
+
+// A thread opens at its latest message; a signed-in page listens for changes.
+function pageShown() {
     const messages = document.querySelector("[data-scroll-end]");
     if (messages) messages.scrollTop = messages.scrollHeight;
-});
+    listen();
+}
+
+// The server reports every change to the mail; the page then refetches itself once and swaps in its
+// [data-live] regions by id. A burst of changes waits for a short quiet spell.
+const REFRESH_DELAY_MS = 300;
+let source = null;
+let timer = null;
+
+function listen() {
+    const signedIn = document.body.classList.contains("app");
+    if (signedIn && !source) {
+        source = new EventSource("/events");
+        source.addEventListener("change", refreshSoon);
+        // After a reconnect, changes made while it was down are caught up.
+        let opened = false;
+        source.addEventListener("open", () => opened ? refreshSoon() : opened = true);
+    } else if (!signedIn && source) {
+        source.close();
+        source = null;
+    }
+}
+
+function refreshSoon() {
+    clearTimeout(timer);
+    timer = setTimeout(refresh, REFRESH_DELAY_MS);
+}
+
+async function refresh() {
+    if (!document.querySelector("[data-live]")) return;
+    const url = location.href;
+    const res = await fetch(url);
+    if (!res.ok || location.href !== url) return;
+    const next = new DOMParser().parseFromString(await res.text(), "text/html");
+    for (const region of document.querySelectorAll("[data-live]")) {
+        const fresh = next.getElementById(region.id);
+        if (!fresh || region.contains(document.activeElement?.closest("input, select, textarea"))) continue;
+        const atEnd = region.scrollHeight - region.scrollTop - region.clientHeight < 2;
+        const scrollTop = region.scrollTop;
+        region.replaceWith(fresh);
+        fresh.scrollTop = fresh.hasAttribute("data-scroll-end") && atEnd ? fresh.scrollHeight : scrollTop;
+        htmx.process(fresh);
+    }
+}
 
 // Files dropped on a [data-drop] zone go to its file input, which uploads them through htmx.
 const zoneOf = event => event.target instanceof Element ? event.target.closest("[data-drop]") : null;

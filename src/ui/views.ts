@@ -1,3 +1,4 @@
+import { crc32 } from "node:zlib";
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import { bareAddress } from "../core/address.ts";
@@ -85,8 +86,18 @@ export interface Mailbox {
     address: string;
 }
 
+/** Pastel hues (OKLCH degrees) for the accent, so several Inboxers tell apart at a glance. */
+const ACCENT_HUES = [45, 75, 105, 145, 175, 205, 235, 265, 295, 325, 355];
+
+/** The accent hue of an instance, picked by a hash of its mail domains. */
+export function accentHue(domains: string[]): number {
+    return ACCENT_HUES[crc32([...domains].sort().join(",")) % ACCENT_HUES.length]!;
+}
+
 export interface LayoutOptions {
     theme: Theme;
+    /** The accent's hue, from `accentHue`. */
+    hue: number;
     page: Page;
     signedIn: boolean;
     draftCount?: number;
@@ -102,20 +113,21 @@ export function layout(title: string, body: View, opts: LayoutOptions): View {
     const count = opts.draftCount ? h`<span class="count">${opts.draftCount}</span>` : "";
     const canSend = !!opts.senders?.length;
     return h`<!doctype html>
-<html lang="en" ${raw(opts.theme === "system" ? "" : `data-theme="${opts.theme}"`)}>
+<html lang="en" style="--hue: ${opts.hue}" ${raw(opts.theme === "system" ? "" : `data-theme="${opts.theme}"`)}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${title} · ${S.appName}</title>
+<meta name="htmx-config" content='{"historyCacheSize":0,"refreshOnHistoryMiss":true}'>
 <link rel="stylesheet" href="${ASSETS["style.css"]!.url}">
 <script src="${ASSETS["htmx.min.js"]!.url}" defer></script>
 <script src="${ASSETS["app.js"]!.url}" defer></script>
 </head>
-<body class="${opts.signedIn ? "app" : ""} ${opts.fullScreen ? "full" : ""}">
+<body class="${opts.signedIn ? "app" : ""} ${opts.fullScreen ? "full" : ""}" hx-boost="true">
 ${when(opts.signedIn, () => h`<aside class="sidebar">
   <div class="brand">${S.appName}<span>.</span></div>
   ${when(canSend, () => h`<button type="button" class="primary new-mail" data-compose>${icon("plus")}${S.newMail}</button>`)}
-  <nav class="side-nav" aria-label="${S.mainNav}">
+  <nav class="side-nav" id="side-nav" data-live aria-label="${S.mainNav}">
     ${link("drafts", "/", S.navDrafts, "drafts", count)}
     ${link("inbox", "/inbox", S.navInbox, "inbox")}
     ${link("devices", "/devices", S.navDevices, "devices")}
@@ -123,7 +135,7 @@ ${when(opts.signedIn, () => h`<aside class="sidebar">
   <nav class="side-nav side-end" aria-label="${S.navSettings}">${link("settings", "/settings", S.navSettings, "settings")}</nav>
 </aside>`)}
 <main>${body}</main>
-${when(opts.signedIn, () => h`<nav class="tabbar" aria-label="${S.mainNav}">
+${when(opts.signedIn, () => h`<nav class="tabbar" id="tabbar" data-live aria-label="${S.mainNav}">
   ${link("drafts", "/", S.navDrafts, "drafts", count)}
   ${link("inbox", "/inbox", S.navInbox, "inbox")}
   ${when(canSend, () => h`<button type="button" class="tab-compose" data-compose aria-label="${S.newMail}"><span>${icon("plus")}</span></button>`)}
@@ -387,7 +399,7 @@ function listTitle(domains: string[], label: string): View {
 
 /** Drafts waiting for review, listed like the inbox; each opens its thread. */
 export function draftList(drafts: Message[], domains: string[], current: string | null): View {
-    return h`<section class="list">
+    return h`<section class="list" id="list" data-live>
   <header class="list-head">${listTitle(domains, S.navDrafts)}</header>
   ${drafts.length ? join(drafts.map(d => h`<a class="row" href="/drafts/${d.id}" ${raw(d.id === current ? 'aria-current="page"' : "")}>
     <span class="avatar" aria-hidden="true">${initials(d.to[0] ?? d.mailbox)}</span>
@@ -419,13 +431,13 @@ export function threadList(threads: Thread[], opts: ThreadListOptions & { domain
     const mailboxLabel = (m: string) => opts.domains.length === 1 ? localPart(opts.addressOf(m)) : opts.addressOf(m);
     const tab =(status: string, label: string) =>
         h`<a class="chip" href="/inbox?${inboxQuery({ ...filter, status })}" ${raw(filter.status === status ? 'aria-current="page"' : "")}>${label}</a>`;
-    return h`<section class="list">
+    return h`<section class="list" id="list" data-live>
   <header class="list-head">
     ${listTitle(opts.domains, S.navInbox)}
     <form class="filters" method="get" action="/inbox">
       <input type="hidden" name="status" value="${filter.status}">
       <nav class="chips" aria-label="${S.filter}">${tab("unanswered", S.filterPending)}${tab("all", S.filterAll)}${tab("archived", S.filterArchived)}</nav>
-      ${when(opts.accounts.length > 1, () => h`<span class="select"><select name="mailbox" aria-label="${S.allMailboxes}" onchange="this.form.submit()">
+      ${when(opts.accounts.length > 1, () => h`<span class="select"><select name="mailbox" aria-label="${S.allMailboxes}" onchange="this.form.requestSubmit()">
         <option value="">${S.allMailboxes}</option>
         ${join(opts.accounts.map(m => h`<option value="${m}" ${raw(m === filter.mailbox ? "selected" : "")}>${mailboxLabel(m)}</option>`))}
       </select></span>`)}
@@ -494,7 +506,7 @@ export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextV
     ${when(rows.length, () => h`<button type="button" class="context-btn" data-context-toggle aria-controls="context">${S.context}</button>`)}
     ${archiveButton(thread)}
   </header>
-  <div class="messages" data-scroll-end>${join(items)}</div>
+  <div class="messages" id="messages" data-live data-scroll-end>${join(items)}</div>
   ${when(opts.reply.allowed, () => h`<form class="composer" method="post" action="/threads/${thread.id}/reply?${query}">
     ${when(opts.reply.replyAll, () => h`<label class="reply-all"><input type="checkbox" name="reply_all" value="1">${S.replyAll}</label>`)}
     <button type="button" class="icon-btn" aria-label="${S.fullReply}" title="${S.fullReply}" hx-get="/threads/${thread.id}/reply/full?${query}" hx-include="closest form" hx-target="#edit-sheet" hx-swap="innerHTML">${icon("plus")}</button>
@@ -542,7 +554,7 @@ export function devicesPage(sessions: Session[], currentId: string, addressOf: (
 export function settingsPage(theme: Theme): View {
     return h`<div class="page">
 <h1>${S.navSettings}</h1>
-<form class="setting" method="post" action="/theme">
+<form class="setting" method="post" action="/theme" hx-boost="false">
   <label for="theme">${S.theme}</label>
   <span class="select"><select id="theme" name="theme" onchange="this.form.submit()">
     ${join((["system", "light", "dark"] as const).map(t =>

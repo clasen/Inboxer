@@ -1,5 +1,6 @@
 import type { Context, Hono } from "hono";
 import { deleteCookie, getCookie, getSignedCookie, setCookie, setSignedCookie } from "hono/cookie";
+import { streamSSE } from "hono/streaming";
 import type { Access } from "../auth.ts";
 import { domainOf, splitAddresses } from "../core/address.ts";
 import { ConflictError, InvalidRequestError, toView, type Mail, type MessageView, type ThreadStatus } from "../core/mail.ts";
@@ -33,6 +34,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     const secret = cfg.ui.cookieSecret;
     const cookieOptions = { httpOnly: true, secure: true, sameSite: "Lax", path: "/", maxAge: COOKIE_MAX_AGE } as const;
 
+    const hue = V.accentHue([...new Set(Object.values(cfg.mailboxes).map(m => domainOf(m.address)))]);
     const own = (address: string): boolean => mail.isOwn(address);
     /** Recipients that are our own addresses are implied by the mailbox badge. */
     const shown = (m: MessageView): MessageView => ({
@@ -50,7 +52,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const shell = session
             ? { draftCount: (await mail.listDrafts(undefined, session.scope)).length, senders: senders(session) }
             : {};
-        return c.html(V.layout(title, body, { theme: theme(c), page: current, signedIn: !!session, fullScreen, ...shell }), status);
+        return c.html(V.layout(title, body, { theme: theme(c), hue, page: current, signedIn: !!session, fullScreen, ...shell }), status);
     };
 
     // Sign-in: GET only shows a button, so link previews and scanners do not burn the link.
@@ -83,7 +85,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         return c.redirect(path, 303);
     });
 
-    const ui = ["/", "/inbox", "/threads/*", "/drafts/*", "/attachments/*", "/compose", "/devices", "/devices/*", "/settings", "/logout"];
+    const ui = ["/", "/inbox", "/threads/*", "/drafts/*", "/attachments/*", "/compose", "/devices", "/devices/*", "/settings", "/logout", "/events"];
     for (const path of ui) {
         app.use(path, async (c, next) => {
             const value = await getSignedCookie(c, secret, SESSION_COOKIE);
@@ -342,6 +344,14 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         return page(c, S.navDevices, V.devicesPage(await access.listSessions(session.scope), session.id, a => mail.addressOf(a)), "devices");
     });
 
+    // Every write pings open pages, which refetch their live regions; the stream carries no mail data.
+    app.get("/events", c => streamSSE(c, async stream => {
+        const ping = () => void stream.writeSSE({ event: "change", data: "1" });
+        mail.changes.addEventListener("change", ping);
+        await new Promise<void>(resolve => stream.onAbort(resolve));
+        mail.changes.removeEventListener("change", ping);
+    }));
+
     app.get("/settings", async c => page(c, S.navSettings, V.settingsPage(theme(c)), "settings"));
 
     app.post("/devices/:id/revoke", async c => {
@@ -353,6 +363,6 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const session = c.get("session");
         await access.revokeSession(session.id, uiActor(session), "session.logout");
         deleteCookie(c, SESSION_COOKIE, { path: "/", secure: true });
-        return c.html(V.layout(S.signedOut, V.message([S.signedOut]), { theme: theme(c), page: null, signedIn: false }));
+        return c.html(V.layout(S.signedOut, V.message([S.signedOut]), { theme: theme(c), hue, page: null, signedIn: false }));
     });
 }

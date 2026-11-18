@@ -479,4 +479,19 @@ describe("http", () => {
         assert.ok(!body.includes("<script>alert"));
         assert.ok(body.includes("Hello there"));
     });
+
+    test("events: a signed-in page hears every change to the mail, a signed-out one gets 401", async () => {
+        assert.equal((await req(h, "/events")).status, 401);
+        const cookie = await signIn(h);
+        const abort = new AbortController();
+        const res = await req(h, "/events", { cookie, signal: abort.signal });
+        assert.equal(res.headers.get("content-type"), "text/event-stream");
+        const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
+
+        h.provider.addInbound({ providerId: "in-1" });
+        await webhook(h, [{ type: "received", providerId: "in-1" }]);
+        let text = "";
+        while (!text.includes("event: change")) text += (await reader.read()).value;
+        abort.abort();
+    });
 });
