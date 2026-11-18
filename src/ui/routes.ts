@@ -92,7 +92,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
             const session = value ? await access.authenticate(value) : null;
             if (!value || !session) {
                 if (value) deleteCookie(c, SESSION_COOKIE, { path: "/" });
-                return page(c, S.appName, V.message([S.notSignedIn]), null, 401);
+                return page(c, S.appName, V.message([S.notSignedIn, S.askForLink]), null, 401);
             }
             await setSignedCookie(c, SESSION_COOKIE, value, secret, cookieOptions);
             c.set("session", session);
