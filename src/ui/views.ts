@@ -2,7 +2,7 @@ import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import { bareAddress } from "../core/address.ts";
 import type { MessageView } from "../core/mail.ts";
-import { CATCHALL, type Contact, type Context, type Message, type Session, type Thread } from "../types.ts";
+import { type Contact, type Context, type Message, type Session, type Thread } from "../types.ts";
 import { ASSETS } from "./assets.ts";
 import { S } from "./strings.ts";
 
@@ -195,13 +195,17 @@ export function signIn(token: string, valid: boolean): View {
 </div>`;
 }
 
-/** An account by its mailbox id, or by the local part of an address the catch-all received. */
-function mailboxBadge(account: string): View {
-    return h`<span class="badge mailbox">${account.includes("@") ? account.slice(0, account.lastIndexOf("@")) : account}</span>`;
+function localPart(address: string): string {
+    return address.includes("@") ? address.slice(0, address.lastIndexOf("@")) : address;
+}
+
+/** An account by the local part of the address it receives mail at. */
+function mailboxBadge(address: string): View {
+    return h`<span class="badge mailbox">${localPart(address)}</span>`;
 }
 
 function draftAccount(d: Message): string {
-    return d.mailbox === CATCHALL ? bareAddress(d.from) : d.mailbox;
+    return bareAddress(d.from);
 }
 
 const PREVIEWABLE = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
@@ -392,7 +396,7 @@ export function draftList(drafts: Message[], domains: string[], current: string 
       <span class="row-subject">${d.subject || "—"}</span>
       <span class="row-snippet">${d.text}</span>
       <span class="row-tags">
-        ${mailboxBadge(d.mailbox)}
+        ${mailboxBadge(draftAccount(d))}
         <span class="row-by">${d.edited_by_human ? S.editedByHuman : S.byAgent}</span>
       </span>
     </span>
@@ -412,7 +416,7 @@ export function inboxQuery(filter: InboxFilter): string {
 /** The thread list; on a wide screen it stays beside the open thread. */
 export function threadList(threads: Thread[], opts: ThreadListOptions & { domains: string[] }): View {
     const { filter } = opts;
-    const mailboxLabel = (m: string) => opts.domains.length === 1 ? m.replace(`@${opts.domains[0]}`, "") : m;
+    const mailboxLabel = (m: string) => opts.domains.length === 1 ? localPart(opts.addressOf(m)) : opts.addressOf(m);
     const tab =(status: string, label: string) =>
         h`<a class="chip" href="/inbox?${inboxQuery({ ...filter, status })}" ${raw(filter.status === status ? 'aria-current="page"' : "")}>${label}</a>`;
     return h`<section class="list">
@@ -435,6 +439,7 @@ interface ThreadListOptions {
     /** Mailbox ids and catch-all addresses, as filter values. */
     accounts: string[];
     accountOf: (t: Thread) => string;
+    addressOf: (account: string) => string;
     filter: InboxFilter;
     own: (address: string) => boolean;
     current: string | null;
@@ -449,7 +454,7 @@ function threadRow(t: Thread, opts: ThreadListOptions): View {
     <span class="row-subject">${t.subject || "—"}</span>
     ${when(t.has_draft || opts.accounts.length > 1 || t.unread, () => h`<span class="row-tags">
       ${when(t.has_draft, () => h`<span class="badge draft">${S.hasDraft}</span>`)}
-      ${when(opts.accounts.length > 1, () => mailboxBadge(opts.accountOf(t)))}
+      ${when(opts.accounts.length > 1, () => mailboxBadge(opts.addressOf(opts.accountOf(t))))}
       ${when(t.unread, () => h`<span class="dot" title="${S.unread}"></span>`)}
     </span>`)}
   </span>
@@ -513,7 +518,7 @@ export function archiveButton(thread: Thread): View {
 </form>`;
 }
 
-export function devicesPage(sessions: Session[], currentId: string): View {
+export function devicesPage(sessions: Session[], currentId: string, addressOf: (account: string) => string): View {
     return h`<section class="list">
   <header class="list-head"><h1>${S.navDevices}</h1></header>
   ${sessions.length ? join(sessions.map(s => h`<div class="row device" id="session-${s.id}">
@@ -523,7 +528,7 @@ export function devicesPage(sessions: Session[], currentId: string): View {
       ${when(s.label && s.user_agent, () => h`<span class="row-subject">${s.user_agent}</span>`)}
       <span class="row-tags">
         ${when(s.id === currentId, () => h`<span class="badge">${S.thisDevice}</span>`)}
-        ${when(s.scope, () => join(s.scope!.map(mailboxBadge)))}
+        ${when(s.scope, () => join(s.scope!.map(m => mailboxBadge(addressOf(m)))))}
         <span class="row-by">${S.signedIn} ${formatDate(s.created_at)} · ${S.createdBy} ${s.created_by}</span>
       </span>
     </span>

@@ -211,7 +211,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const filter = inboxFilter(c);
         const threads = await mail.listThreads({ mailbox: filter.mailbox || undefined, status: filter.status as ThreadStatus, limit: 200 }, session.scope);
         const accounts = await mail.listAccounts(session.scope);
-        return V.threadList(threads, { accounts, accountOf: t => mail.accountOf(t), domains: domainsOf(session), filter, own, current });
+        return V.threadList(threads, { accounts, accountOf: t => mail.accountOf(t), addressOf: a => mail.addressOf(a), domains: domainsOf(session), filter, own, current });
     };
 
     app.get("/inbox", async c => page(c, S.navInbox, V.inboxPage(await threadList(c, null), null), "inbox"));
@@ -339,7 +339,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
 
     app.get("/devices", async c => {
         const session = c.get("session");
-        return page(c, S.navDevices, V.devicesPage(await access.listSessions(session.scope), session.id), "devices");
+        return page(c, S.navDevices, V.devicesPage(await access.listSessions(session.scope), session.id, a => mail.addressOf(a)), "devices");
     });
 
     app.get("/settings", async c => page(c, S.navSettings, V.settingsPage(theme(c)), "settings"));

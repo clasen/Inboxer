@@ -134,6 +134,12 @@ export class Mail {
         return thread.mailbox === CATCHALL ? this.catchAllAddress(thread.participants) ?? CATCHALL : thread.mailbox;
     }
 
+    /** The address an account receives mail at: a configured mailbox's address, or the catch-all address itself. */
+    addressOf(account: string): string {
+        const mailbox = this.cfg.mailboxes[account];
+        return mailbox ? bareAddress(mailbox.address) : account;
+    }
+
     /** Mailboxes in scope, with the catch-all split into the addresses it has received mail for. */
     async listAccounts(scope: Scope): Promise<string[]> {
         const mailboxes = this.listMailboxes(scope).map(m => m.id).filter(id => id !== CATCHALL);
