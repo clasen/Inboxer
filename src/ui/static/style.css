@@ -330,8 +330,15 @@ dialog.sheet .note { margin: 0 16px 8px; flex: none; }
 .pending-row span { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
 .pending-row strong { color: var(--fg); font-weight: 500; }
 .countdown { position: absolute; left: 0; top: -1px; height: 1px; width: 100%; background: var(--accent); transform-origin: left; animation: countdown linear forwards; }
-.messages .countdown { left: 14px; right: 14px; width: auto; top: auto; bottom: 6px; }
+.messages .countdown {
+    inset: -1.5px; width: auto; height: auto; padding: 1.5px; border-radius: inherit; pointer-events: none;
+    background: conic-gradient(var(--accent) var(--countdown-angle), transparent 0);
+    mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+    animation-name: countdown-ring;
+}
+@property --countdown-angle { syntax: "<angle>"; inherits: false; initial-value: 360deg; }
 @keyframes countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes countdown-ring { from { --countdown-angle: 360deg; } to { --countdown-angle: 0deg; } }
 .sheet-conflict { padding: 0 16px 8px; max-height: 40%; overflow-y: auto; flex: none; }
 .sheet-conflict .warn { color: var(--danger); font-weight: 600; margin: 0; }
 .sheet-conflict details summary { margin-top: 8px; }
