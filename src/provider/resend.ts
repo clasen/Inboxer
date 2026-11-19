@@ -3,11 +3,12 @@ import type { AttachmentMeta } from "../types.ts";
 import {
     WebhookSignatureError,
     type DeliveryStatus,
-    type InboundMessage,
     type MailProvider,
+    type MessageEvent,
     type OutboundMessage,
     type OutboundStatus,
     type ProviderEvent,
+    type ProviderMessage,
     type WebhookRequest,
 } from "./types.ts";
 
@@ -74,11 +75,11 @@ export interface ResendProviderConfig {
     webhookSecret: string;
 }
 
-export function createResendProvider(config: Record<string, unknown>): MailProvider {
+export function createResendProvider(name: string, config: Record<string, unknown>): MailProvider {
     const { apiKey, webhookSecret } = config as unknown as ResendProviderConfig;
-    if (typeof apiKey !== "string" || !apiKey) throw new Error("provider.apiKey is required for the resend provider");
+    if (typeof apiKey !== "string" || !apiKey) throw new Error(`providers.${name}.apiKey is required for the resend provider`);
     if (typeof webhookSecret !== "string" || !webhookSecret) {
-        throw new Error("provider.webhookSecret is required for the resend provider");
+        throw new Error(`providers.${name}.webhookSecret is required for the resend provider`);
     }
     const webhook = new Webhook(webhookSecret);
 
@@ -114,7 +115,8 @@ export function createResendProvider(config: Record<string, unknown>): MailProvi
     }
 
     return {
-        name: "resend",
+        name,
+        kind: "mail",
 
         parseWebhook({ headers, body }: WebhookRequest): ProviderEvent[] {
             try {
@@ -128,17 +130,19 @@ export function createResendProvider(config: Record<string, unknown>): MailProvi
                 throw err;
             }
             const payload = JSON.parse(body) as { type: string; data: { email_id: string; message_id?: string | null } };
-            if (payload.type === "email.received") return [{ type: "received", providerId: payload.data.email_id }];
+            if (payload.type === "email.received") return [{ type: "message", providerId: payload.data.email_id }];
             const status = WEBHOOK_STATUS[payload.type];
             if (!status) return [];
             return [{ type: "status", providerId: payload.data.email_id, status, messageId: payload.data.message_id ?? null }];
         },
 
-        async getInbound(providerId: string): Promise<InboundMessage> {
+        async getMessage(providerId: string): Promise<ProviderMessage> {
             const email = await request<ResendReceivedEmail>("GET", `/emails/receiving/${encodeURIComponent(providerId)}`);
             const headers = normalizeHeaders(email.headers ?? {});
             return {
                 providerId: email.id,
+                direction: "in",
+                status: null,
                 messageId: email.message_id ?? headers["message-id"] ?? null,
                 inReplyTo: headers["in-reply-to"]?.trim() || null,
                 references: (headers["references"] ?? "").split(/\s+/).filter(Boolean),
@@ -153,13 +157,13 @@ export function createResendProvider(config: Record<string, unknown>): MailProvi
                 html: email.html,
                 headers,
                 attachments: (email.attachments ?? []).map(toAttachmentMeta),
-                receivedAt: parseResendDate(email.created_at).toISOString(),
+                at: parseResendDate(email.created_at).toISOString(),
             };
         },
 
-        async *listInbound(since: Date): AsyncIterable<string> {
+        async *listMessages(since: Date): AsyncIterable<MessageEvent> {
             for await (const item of paginate<{ id: string; created_at: string }>("/emails/receiving", since)) {
-                yield item.id;
+                yield { type: "message", providerId: item.id };
             }
         },
 
@@ -177,9 +181,9 @@ export function createResendProvider(config: Record<string, unknown>): MailProvi
                 to: message.to,
                 subject: message.subject,
                 text: message.text,
-                html: message.html,
                 headers: message.headers,
             };
+            if (message.html !== null) body.html = message.html;
             if (message.cc.length) body.cc = message.cc;
             if (message.bcc.length) body.bcc = message.bcc;
             if (message.replyTo.length) body.reply_to = message.replyTo;

@@ -12,14 +12,15 @@ import { FakeProvider, TOKEN, testConfig, webhook, type Harness } from "../test/
 const PORT = Number(process.env.PORT ?? 4100);
 const dataDir = mkdtempSync(join(tmpdir(), "inboxer-preview-"));
 const provider = new FakeProvider();
-const config = testConfig(dataDir);
+const wa = new FakeProvider("wa", "chat");
+const config = testConfig(dataDir, { chat: true });
 config.publicUrl = `http://localhost:${PORT}`;
 config.ui.undoSec = 5;
 const DOMAIN = "example.com";
 for (const mailbox of Object.values(config.mailboxes)) mailbox.address = mailbox.address.replace(/@.*/, `@${DOMAIN}`);
-const inboxer = createInboxer(config, { provider });
+const inboxer = createInboxer(config, { providers: { fake: provider, wa } });
 await inboxer.ready;
-const h: Harness = { inboxer, provider, dataDir, close: async () => {} };
+const h: Harness = { inboxer, provider, wa, dataDir, close: async () => {} };
 
 const client = new Client({ name: "preview", version: "1.0.0" });
 await client.connect(new StreamableHTTPClientTransport(new URL("http://localhost/mcp"), {
@@ -33,7 +34,7 @@ const call = async (name: string, args: Record<string, unknown>) => {
 
 const inbound = (message: Parameters<FakeProvider["addInbound"]>[0]) => provider.addInbound({ to: [`support@${DOMAIN}`], ...message });
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
-const receive = async (...ids: string[]) => webhook(h, ids.map(providerId => ({ type: "received" as const, providerId })));
+const receive = async (...ids: string[]) => webhook(h, ids.map(providerId => ({ type: "message" as const, providerId })));
 const file = (providerId: string, id: string, filename: string, content_type: string, body: string): AttachmentMeta => {
     provider.files.set(`${providerId}/${id}`, new TextEncoder().encode(body));
     return { id, filename, content_type, size: body.length, inline: false, content_id: null };
@@ -45,15 +46,15 @@ const lastMessage = async (threadId: string) => (await call("get_thread", { thre
 inbound({
     providerId: "laura-1", from: "Laura Pérez <laura@acme.io>", cc: ["finance@acme.io"], subject: "Invoice #2041 charged twice",
     text: "Hi,\n\nwe were charged twice for invoice #2041 this month, once on the 1st and again on the 3rd. Can you check and refund the duplicate?\n\nThanks,\nLaura",
-    receivedAt: ago(60 * 50),
+    at: ago(60 * 50),
 });
 inbound({
     providerId: "tomas-1", from: "Tomás Kahn <tomas@kahn.dev>", subject: "Can't log in after password reset",
-    text: "The link says expired every time I try, even right after requesting it. I'm on Safari 18.", receivedAt: ago(30),
+    text: "The link says expired every time I try, even right after requesting it. I'm on Safari 18.", at: ago(30),
 });
 inbound({
     providerId: "northwind-1", from: "Northwind Retail <buy@northwind.test>", to: [`feedback@${DOMAIN}`], subject: "Volume pricing for 40 seats",
-    text: "We're evaluating for Q1 and would like a quote for 40 seats, billed yearly.", receivedAt: ago(60 * 26),
+    text: "We're evaluating for Q1 and would like a quote for 40 seats, billed yearly.", at: ago(60 * 26),
 });
 inbound({
     providerId: "marta-1", from: "Marta Soler <marta@soler.test>", subject: "Export to CSV drops the last column",
@@ -62,11 +63,11 @@ inbound({
         file("marta-1", "before", "export-before.csv", "text/csv", "id,name,notes\n1,Ana,VIP\n"),
         file("marta-1", "after", "export-after.csv", "text/csv", "id,name\n1,Ana\n"),
     ],
-    receivedAt: ago(60 * 75),
+    at: ago(60 * 75),
 });
 inbound({
     providerId: "old-1", from: "Diego Ruiz <diego@ruiz.test>", subject: "Thanks for the quick fix",
-    text: "All good now, you can close this one.", receivedAt: ago(60 * 24 * 6),
+    text: "All good now, you can close this one.", at: ago(60 * 24 * 6),
 });
 await receive("laura-1", "tomas-1", "northwind-1", "marta-1", "old-1");
 
@@ -76,7 +77,7 @@ inbound({
     providerId: "laura-2", from: "Laura Pérez <laura@acme.io>", cc: ["finance@acme.io"], subject: "Re: Invoice #2041 charged twice",
     inReplyTo: "<laura-1@customer.test>", references: ["<laura-1@customer.test>"],
     text: "Thanks. It's been three days and nothing yet, any update? Our finance team needs to close the month on Friday.",
-    receivedAt: new Date().toISOString(),
+    at: new Date().toISOString(),
 });
 await receive("laura-2");
 await call("create_draft", {
@@ -98,6 +99,20 @@ await call("send", { mailbox: "support", to: ["ana@customer.test"], subject: "Yo
 
 const old = await threadOf("Thanks for the quick fix");
 await call("mark", { ids: [old.id], archived: true });
+
+const chat = (providerId: string, min: number, partial: Parameters<FakeProvider["chatMessage"]>[0] | object, counterpart?: string) =>
+    ({ type: "message" as const, providerId, message: wa.chatMessage({ providerId, at: ago(min), ...partial }, counterpart) });
+await webhook(h, [
+    chat("wa-1", 95, { text: "Hola! Quiero publicitar mi cafetería en los vuelos a Bariloche" }),
+    chat("wa-2", 94, { direction: "out", status: "read", text: "Hola Lucía, soy el asistente de Flight Desk. ¿Cómo se llama la cafetería y qué querés promocionar?" }),
+    chat("wa-3", 90, { text: "Se llama Tostado. Una promo de desayuno para turistas" }),
+    chat("wa-4", 89, { direction: "out", status: "read", text: "Perfecto. Pasé tu solicitud al equipo, te aviso apenas la revisen." }),
+    chat("wa-5", 20, { direction: "out", status: "delivered", text: "¡Aprobada! Acá tenés el link de pago: https://pay.example.com/ord_81" }),
+    chat("wa-6", 4, { text: "Genial, ¿puedo pagar con transferencia?" }),
+    chat("wa-7", 300, { text: "Buenas, ¿cuánto sale una campaña de un mes?" }, "Bruno Díaz <+5491166660000>"),
+    chat("wa-8", 299, { direction: "out", status: "delivered", text: "Hola Bruno, te cuento los planes disponibles." }, "Bruno Díaz <+5491166660000>"),
+], "ok", "wa");
+await call("set_contact", { address: "+5491155550000", meta: { stage: "approved", company: "Tostado" } });
 
 const link = await call("create_login_link", { label: "preview" });
 const server = createServer(inboxer.handler).listen(PORT, () => {

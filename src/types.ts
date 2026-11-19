@@ -1,8 +1,13 @@
 export interface MailboxConfig {
+    /** An email address, or the phone number of a chat provider's line. */
     address: string;
     name: string;
+    /** The entry of `providers` this mailbox receives and sends through. */
+    provider: string;
     signatureHtml?: string;
     signatureText?: string;
+    /** Review UI sessions can read and organize this mailbox, but not draft or send in it. */
+    uiReadOnly?: true;
     /** MCP tokens that only reach this mailbox, by name. */
     tokens?: Record<string, string>;
 }
@@ -18,7 +23,8 @@ export interface InboxerConfig {
     syncIntervalMin: number;
     threadWindowDays: number;
     mailboxes: Record<string, MailboxConfig>;
-    provider: ProviderConfig;
+    /** Messaging services by name; the name is the webhook route, `/webhooks/<name>`. */
+    providers: Record<string, ProviderConfig>;
     mcp: { tokens: Record<string, string>; maxAttachmentMb: number };
     ui: { cookieSecret: string; loginLinkTtlMin: number; undoSec: number; maxUploadMb: number };
 }
@@ -26,7 +32,7 @@ export interface InboxerConfig {
 export const CATCHALL = "catchall";
 
 export type Direction = "in" | "out";
-export type MessageStatus = "received" | "draft" | "sent" | "delivered" | "bounced" | "failed" | "discarded";
+export type MessageStatus = "received" | "draft" | "sent" | "delivered" | "read" | "bounced" | "failed" | "discarded";
 /** Mailbox ids an actor may reach; null reaches every mailbox, the catch-all included. */
 export type Scope = string[] | null;
 export type Actor = { kind: "agent" | "ui" | "cli"; name: string; scope: Scope };
@@ -87,6 +93,8 @@ export interface Thread {
     subject: string;
     norm_subject: string;
     participants: string[];
+    /** Display names seen in the From of received messages, by bare address. */
+    names: Record<string, string>;
     last_at: string;
     last_direction: Direction;
     has_draft: boolean;

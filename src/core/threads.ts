@@ -1,6 +1,6 @@
 import { nid, type Store } from "../store.ts";
 import type { Message, Thread } from "../types.ts";
-import { bareAddress } from "./address.ts";
+import { bareAddress, nameOf } from "./address.ts";
 import { normalizeSubject } from "./text.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -54,6 +54,12 @@ export async function resolveThreadId(
     return nid();
 }
 
+/** A chat mailbox keeps one thread per counterpart. */
+export async function chatThreadId(store: Store, mailbox: string, counterpart: string): Promise<string> {
+    const thread = (await store.allThreads()).find(t => t.mailbox === mailbox && t.participants.includes(counterpart));
+    return thread?.id ?? nid();
+}
+
 export async function threadMessages(store: Store, thread: Thread): Promise<Message[]> {
     const messages = await Promise.all(thread.message_ids.map(id => store.requireMessage(id)));
     return messages.filter(m => m.status !== "discarded").sort((a, b) => messageTime(a).localeCompare(messageTime(b)));
@@ -69,6 +75,7 @@ export async function refreshThread(store: Store, threadId: string, newMessageId
         subject: "",
         norm_subject: "",
         participants: [],
+        names: {},
         last_at: "",
         last_direction: "in",
         has_draft: false,
@@ -90,6 +97,10 @@ export async function refreshThread(store: Store, threadId: string, newMessageId
     thread.subject = first.subject;
     thread.norm_subject = normalizeSubject(first.subject);
     thread.participants = [...new Set(messages.flatMap(participantsOf))];
+    for (const m of messages) {
+        const name = m.direction === "in" ? nameOf(m.from) : null;
+        if (name) thread.names[bareAddress(m.from)] = name;
+    }
     thread.last_at = messageTime(last);
     thread.last_direction = last.direction;
     thread.has_draft = messages.some(m => m.status === "draft");

@@ -76,7 +76,7 @@ function displayName(address: string): string {
 }
 
 function initials(address: string): string {
-    const name = displayName(address);
+    const name = displayName(address).replace(/^\+/, "");
     const words = (name.includes("@") ? name.split("@")[0]! : name).split(/[\s._-]+/).filter(Boolean);
     return (words.length > 1 ? words[0]![0]! + words[1]![0]! : (words[0] ?? "?").slice(0, 2)).toUpperCase();
 }
@@ -305,8 +305,8 @@ function pendingCard(d: Message): View {
 </article>`;
 }
 
-/** A draft for review, on our side of its thread. */
-export function draftCard(d: Message): View {
+/** A draft for review, on our side of its thread; without actions where the session can only read. */
+export function draftCard(d: Message, canAct: boolean): View {
     if (d.pending) return pendingCard(d);
     return h`<article class="card draft" id="draft-${d.id}">
   <div class="meta">
@@ -316,16 +316,16 @@ export function draftCard(d: Message): View {
   </div>
   <div class="draft-head">
     <div class="meta"><span>${S.to}: <strong>${d.to.join(", ")}</strong></span>${when(d.cc.length, () => h`<span>${S.cc}: ${d.cc.join(", ")}</span>`)}</div>
-    <div class="subject">${d.subject}</div>
+    ${when(d.subject, () => h`<div class="subject">${d.subject}</div>`)}
   </div>
   ${when(d.note, () => h`<div class="note">${d.note}</div>`)}
   <pre class="body">${d.text}</pre>
   ${attachments(d)}
-  <div class="actions">
+  ${when(canAct, () => h`<div class="actions">
     <button class="danger" hx-post="/drafts/${d.id}/discard" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.discard}</button>
     <button hx-get="/drafts/${d.id}/edit" hx-target="#edit-sheet" hx-swap="innerHTML">${S.edit}</button>
     <button class="primary" hx-post="/drafts/${d.id}/send" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.send}</button>
-  </div>
+  </div>`)}
 </article>`;
 }
 
@@ -336,8 +336,8 @@ export interface DraftForm {
     text: string;
 }
 
-/** The edit sheet's content; one draft is edited at a time. */
-export function draftEditor(d: Message, form: DraftForm, conflict: Message | null): View {
+/** The edit sheet's content; one draft is edited at a time. A chat message has a recipient and a body only. */
+export function draftEditor(d: Message, form: DraftForm, conflict: Message | null, chat: boolean): View {
     const version = conflict ? conflict.version : d.version;
     return h`<form class="${conflict ? "conflict" : ""}" hx-post="/drafts/${d.id}/save" hx-target="#edit-sheet" hx-swap="innerHTML" data-drop>
   <div class="grabber" aria-hidden="true"></div>
@@ -358,16 +358,16 @@ export function draftEditor(d: Message, form: DraftForm, conflict: Message | nul
   <div class="field">
     <label for="to-${d.id}">${S.to}</label>
     <input id="to-${d.id}" name="to" value="${form.to}" autocomplete="off" required>
-    ${when(!form.cc, () => h`<button type="button" class="link" onclick="this.remove();var r=document.getElementById('cc-row-${d.id}');r.hidden=false;r.querySelector('input').focus()">${S.cc}</button>`)}
+    ${when(!chat && !form.cc, () => h`<button type="button" class="link" onclick="this.remove();var r=document.getElementById('cc-row-${d.id}');r.hidden=false;r.querySelector('input').focus()">${S.cc}</button>`)}
   </div>
-  <div class="field" id="cc-row-${d.id}" ${raw(form.cc ? "" : "hidden")}>
+  ${when(!chat, () => h`<div class="field" id="cc-row-${d.id}" ${raw(form.cc ? "" : "hidden")}>
     <label for="cc-${d.id}">${S.cc}</label>
     <input id="cc-${d.id}" name="cc" value="${form.cc}" autocomplete="off">
   </div>
   <div class="field">
     <label for="subject-${d.id}">${S.subject}</label>
     <input id="subject-${d.id}" name="subject" value="${form.subject}" required>
-  </div>
+  </div>`)}
   <textarea id="text-${d.id}" name="text" aria-label="${S.body}" required>${form.text}</textarea>
   <div class="sheet-actions">
     ${draftFiles(d, null)}
@@ -454,16 +454,18 @@ interface ThreadListOptions {
     addressOf: (account: string) => string;
     filter: InboxFilter;
     own: (address: string) => boolean;
+    isChat: (mailbox: string) => boolean;
     current: string | null;
 }
 
 function threadRow(t: Thread, opts: ThreadListOptions): View {
-    const people = t.participants.filter(p => !opts.own(p));
+    const chat = opts.isChat(t.mailbox);
+    const people = t.participants.filter(p => !opts.own(p)).map(p => (chat && t.names[p]) || p);
     return h`<a class="row ${t.unread ? "unread" : ""}" href="/threads/${t.id}?${inboxQuery(opts.filter)}" ${raw(t.id === opts.current ? 'aria-current="page"' : "")}>
   <span class="avatar" aria-hidden="true">${initials(people[0] ?? t.mailbox)}</span>
   <span class="row-main">
     <span class="row-top"><span class="who">${people.join(", ") || t.mailbox}</span><time datetime="${t.last_at}">${formatDate(t.last_at)}</time></span>
-    <span class="row-subject">${t.subject || "—"}</span>
+    ${when(!chat, () => h`<span class="row-subject">${t.subject || "—"}</span>`)}
     ${when(t.has_draft || opts.accounts.length > 1 || t.unread, () => h`<span class="row-tags">
       ${when(t.has_draft, () => h`<span class="badge draft">${S.hasDraft}</span>`)}
       ${when(opts.accounts.length > 1, () => mailboxBadge(opts.addressOf(opts.accountOf(t))))}
@@ -483,12 +485,13 @@ export interface ThreadEntry {
     view: View;
 }
 
-/** The conversation, oldest first, with day separators, a reply box and the context panel. */
-export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextView, opts: { back: string; filter: InboxFilter; own: (address: string) => boolean; account: string; reply: { allowed: boolean; replyAll: boolean } }): View {
+/** The conversation, oldest first, with day separators, a reply box and the context panel. A chat is titled by who it is with. */
+export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextView, opts: { back: string; filter: InboxFilter; own: (address: string) => boolean; account: string; chat: boolean; reply: { allowed: boolean; replyAll: boolean } }): View {
     const query = inboxQuery(opts.filter);
     const rows = contextRows(ctx);
     const people = thread.participants.filter(p => !opts.own(p));
-    const title = h`<span class="thread-subject">${thread.subject || "—"}</span><span class="thread-meta">${[...people, opts.account].join(" · ")}</span>`;
+    const heading = opts.chat ? people.map(p => thread.names[p] ?? p).join(", ") : thread.subject;
+    const title = h`<span class="thread-subject">${heading || "—"}</span><span class="thread-meta">${[...people, opts.account].join(" · ")}</span>`;
     const items: View[] = [];
     let day = "";
     for (const entry of entries) {
@@ -509,7 +512,7 @@ export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextV
   <div class="messages" id="messages" data-live data-scroll-end>${join(items)}</div>
   ${when(opts.reply.allowed, () => h`<form class="composer" method="post" action="/threads/${thread.id}/reply?${query}">
     ${when(opts.reply.replyAll, () => h`<label class="reply-all"><input type="checkbox" name="reply_all" value="1">${S.replyAll}</label>`)}
-    <button type="button" class="icon-btn" aria-label="${S.fullReply}" title="${S.fullReply}" hx-get="/threads/${thread.id}/reply/full?${query}" hx-include="closest form" hx-target="#edit-sheet" hx-swap="innerHTML">${icon("plus")}</button>
+    ${when(!opts.chat, () => h`<button type="button" class="icon-btn" aria-label="${S.fullReply}" title="${S.fullReply}" hx-get="/threads/${thread.id}/reply/full?${query}" hx-include="closest form" hx-target="#edit-sheet" hx-swap="innerHTML">${icon("plus")}</button>`)}
     <textarea name="text" rows="1" aria-label="${S.reply}" placeholder="${S.reply}…" required></textarea>
     <button type="submit" name="action" value="save" class="icon-btn" aria-label="${S.saveDraft}" title="${S.saveDraft}">${icon("drafts")}</button>
     <button type="submit" name="action" value="send" class="primary send" aria-label="${S.send}" title="${S.send}">${icon("send")}</button>

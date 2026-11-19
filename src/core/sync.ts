@@ -1,3 +1,4 @@
+import type { MailProvider } from "../provider/types.ts";
 import type { Mail } from "./mail.ts";
 
 /**
@@ -35,17 +36,32 @@ export class Sync {
         return this.running;
     }
 
+    /** Providers sync one after another; one that fails does not hold back the rest. */
     private async runOnce(): Promise<void> {
-        const startedAt = new Date();
-        const cursor = await this.mail.store.getSyncCursor();
-        const since = new Date((cursor ? new Date(cursor).getTime() : startedAt.getTime()) - this.intervalMs);
+        const failures: unknown[] = [];
+        for (const provider of Object.values(this.mail.providers)) {
+            await this.syncProvider(provider).catch(err => failures.push(err));
+        }
+        if (failures.length) throw failures.length === 1 ? failures[0] : new AggregateError(failures, "several providers failed to sync");
+    }
 
-        for await (const providerId of this.mail.provider.listInbound(since)) {
-            await this.mail.ingest(providerId);
+    /**
+     * A chat mailbox mirrors conversations that began before Inboxer was attached to the line,
+     * so its first run reads the whole history.
+     */
+    private async syncProvider(provider: MailProvider): Promise<void> {
+        const startedAt = new Date();
+        const cursor = await this.mail.store.getSyncCursor(provider.name);
+        const since = cursor
+            ? new Date(new Date(cursor).getTime() - this.intervalMs)
+            : provider.kind === "chat" ? new Date(0) : new Date(startedAt.getTime() - this.intervalMs);
+
+        for await (const event of provider.listMessages(since)) {
+            await this.mail.applyEvent(provider.name, event);
         }
-        for await (const { providerId, status } of this.mail.provider.listOutbound(since)) {
-            await this.mail.applyStatus(providerId, status, null);
+        for await (const { providerId, status } of provider.listOutbound(since)) {
+            await this.mail.applyStatus(provider.name, providerId, status, null);
         }
-        await this.mail.store.setSyncCursor(startedAt.toISOString());
+        await this.mail.store.setSyncCursor(provider.name, startedAt.toISOString());
     }
 }

@@ -21,23 +21,25 @@ const config = {
     syncIntervalMin: 10,
     threadWindowDays: 30,
     mailboxes: {
-        support: { address: "support@example.com", name: "Example Support",
+        support: { address: "support@example.com", name: "Example Support", provider: "resend",
                    signatureText: "-- Example Support", signatureHtml: "<p>-- Example Support</p>",
                    tokens: { "support-schedule": "<openssl rand -hex 32>" } }   // support only
     },
-    provider: { type: "resend", apiKey: "re_...", webhookSecret: "whsec_..." },
+    providers: { resend: { type: "resend", apiKey: "re_...", webhookSecret: "whsec_..." } },
     mcp: { tokens: { "admin": "<openssl rand -hex 32>" }, maxAttachmentMb: 10 },  // every mailbox
     ui: { cookieSecret: "<openssl rand -hex 32>", loginLinkTtlMin: 10, undoSec: 10, maxUploadMb: 20 }
 };
 ```
 
-- Every key above is required except the mailbox signatures and mailbox tokens; `createInboxer` throws on a missing or invalid one. There are no defaults.
+- Every key above is required except the mailbox signatures, mailbox tokens and `uiReadOnly`; `createInboxer` throws on a missing or invalid one. There are no defaults.
 - `mailboxes` is an object keyed by id. `catchall` is reserved: unknown recipients land there, grouped by the address they were written to. It answers as that address, with the name and signature of a mailbox on the same domain, and cannot start new mail.
-- `provider.apiKey`, `provider.webhookSecret`, every token and `ui.cookieSecret` are secrets: keep them out of Git and out of logs.
+- Each mailbox names its `provider`, a key of `providers`. That key is the webhook route (`/webhooks/<name>`) and is stored on every message: do not rename it once there is data.
+- `uiReadOnly: true` on a mailbox lets browser sessions read and organize it but not draft or send; MCP tokens still can.
+- Every provider `apiKey` and `webhookSecret`, every token and `ui.cookieSecret` are secrets: keep them out of Git and out of logs.
 
 ## Serve
 
-`createInboxer(cfg, { provider? })` is synchronous, does not listen, and returns `{ fetch, handler, ready, close }`. Requests wait for `ready`.
+`createInboxer(cfg, { providers? })` is synchronous, does not listen, and returns `{ fetch, handler, ready, close }`. Requests wait for `ready`.
 
 ```typescript
 import { createInboxer } from "inboxer";
@@ -60,16 +62,20 @@ Keep two domains apart: the app runs on its own host, e.g. `inboxer.example.com`
 2. MX and TXT — `send` (bounces and SPF): MX `send` → `feedback-smtp.us-east-1.amazonses.com`, priority `10`; TXT `send` → `v=spf1 include:amazonses.com ~all`.
 3. TXT — DMARC: `_dmarc` → `v=DMARC1; p=none; rua=mailto:dmarc@example.com`.
 4. MX — receiving: `@` → `inbound-smtp.us-east-1.amazonaws.com`, priority `10`. This moves the whole domain's mail to Resend; unknown addresses land in `catchall`. To keep the root elsewhere, put the addresses and this MX on a subdomain. Wait until Resend shows the domain verified.
-5. Create a full-access API key (Inboxer reads emails, not only sends) → `provider.apiKey`.
+5. Create a full-access API key (Inboxer reads emails, not only sends) → the provider's `apiKey`.
 6. Deploy Inboxer over HTTPS at `publicUrl`.
-7. Create a webhook at `<publicUrl>/webhooks/resend` for `email.received`, `email.sent`, `email.delivered`, `email.bounced`, `email.failed`, `email.suppressed` → its signing secret is `provider.webhookSecret`.
+7. Create a webhook at `<publicUrl>/webhooks/resend` for `email.received`, `email.sent`, `email.delivered`, `email.bounced`, `email.failed`, `email.suppressed` → its signing secret is the provider's `webhookSecret`.
 8. Restart and send a test email from outside. A webhook `401` means a wrong signing secret.
 
 Missed webhooks are recovered by the periodic sync.
 
+## WhatsApp through Kapso
+
+A WhatsApp number is a mailbox of kind `chat`: `mailboxes: { whatsapp: { address: "+12025550100", name: "Example", provider: "whatsapp" } }` with `providers: { whatsapp: { type: "kapso", apiKey, webhookSecret, phoneNumberId } }`. In Kapso, add a webhook of kind `kapso` on the number at `<publicUrl>/webhooks/whatsapp` for `whatsapp.message.received`, `.sent`, `.delivered`, `.read` and `.failed`; its secret is `webhookSecret`. A number takes several webhooks, so an existing bot keeps its own. Inboxer mirrors everything on the line, including what a bot sends through Kapso directly, and its first sync reads the whole history.
+
 ## Another provider
 
-Implement `MailProvider` (exported types) and pass it as `createInboxer(cfg, { provider })`; `cfg.provider.type` is then not required. `send()` must not deliver twice for the same `idempotencyKey` (Inboxer passes the draft id). `parseWebhook()` throws `WebhookSignatureError` on a bad signature.
+Implement `MailProvider` (exported types) and pass it as `createInboxer(cfg, { providers: { <name>: instance } })`; `cfg.providers` is then not read. `send()` must not deliver twice for the same `idempotencyKey` (Inboxer passes the draft id). `parseWebhook()` throws `WebhookSignatureError` on a bad signature.
 
 ## Connect an MCP client
 
@@ -97,6 +103,7 @@ Rules for agents:
 - Pass a **message id** as `reply_to_id` or `message_id`. Recipients, `Re:` subject, `In-Reply-To` and `References` are derived; do not set them by hand. `reply_all` adds the original To/Cc minus the mailbox itself.
 - Put what the reviewer must do or check in `note`, not in the body. The note is never sent.
 - A new conversation needs `mailbox`, `to` and `subject`.
+- `list_mailboxes` gives each mailbox's `kind`. In a `chat` mailbox (a phone line) addresses are phone numbers, a thread is the whole conversation with one number, and a message is plain text: no `subject`, `cc`, `bcc` or `html`. `send({ mailbox, to: ["+5491155550000"], text })` joins that number's thread. Messages with status `read` were seen by the recipient. WhatsApp only delivers free text within 24 hours of the person's last message; a later send fails.
 - `update_draft` needs the draft's current `version`. On a conflict the error includes `current`; re-read it before retrying.
 - A draft whose `pending` is set is in the reviewer's undo window and is about to be sent or discarded; `update_draft` fails until it ends.
 - Never `force` an update of a draft with `edited_by_human: true` unless the user explicitly asks; the human's edit wins.

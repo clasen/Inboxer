@@ -69,11 +69,11 @@ describe("http", () => {
 
     test("webhook: 401 on a bad signature, 404 for another provider, ingests once", async () => {
         h.provider.addInbound({ providerId: "in-1" });
-        assert.equal((await webhook(h, [{ type: "received", providerId: "in-1" }], "bad")).status, 401);
+        assert.equal((await webhook(h, [{ type: "message", providerId: "in-1" }], "bad")).status, 401);
         const other = await req(h, "/webhooks/resend", { method: "POST", body: "[]" });
         assert.equal(other.status, 404);
-        assert.equal((await webhook(h, [{ type: "received", providerId: "in-1" }])).status, 200);
-        assert.equal((await webhook(h, [{ type: "received", providerId: "in-1" }])).status, 200);
+        assert.equal((await webhook(h, [{ type: "message", providerId: "in-1" }])).status, 200);
+        assert.equal((await webhook(h, [{ type: "message", providerId: "in-1" }])).status, 200);
 
         const client = await mcpClient(h);
         const { data } = await call(client, "list_threads");
@@ -82,7 +82,7 @@ describe("http", () => {
     });
 
     test("webhook answers 500 when processing fails, so the provider retries", async () => {
-        const res = await webhook(h, [{ type: "received", providerId: "missing" }]);
+        const res = await webhook(h, [{ type: "message", providerId: "missing" }]);
         assert.equal(res.status, 500);
     });
 
@@ -99,7 +99,7 @@ describe("http", () => {
         }
 
         h.provider.addInbound({ providerId: "q" });
-        await webhook(h, [{ type: "received", providerId: "q" }]);
+        await webhook(h, [{ type: "message", providerId: "q" }]);
         const [thread] = (await call(client, "list_threads", { mailbox: "support" })).data;
         const { data: full } = await call(client, "get_thread", { thread_id: thread.id });
         const { data: draft } = await call(client, "create_draft", { reply_to_id: full.messages[0].id, text: "Seven days.", note: "extend trial first" });
@@ -132,7 +132,7 @@ describe("http", () => {
 
     test("a login link with a thread lands on that thread", async () => {
         h.provider.addInbound({ providerId: "q" });
-        await webhook(h, [{ type: "received", providerId: "q" }]);
+        await webhook(h, [{ type: "message", providerId: "q" }]);
         const client = await mcpClient(h);
         const [thread] = (await call(client, "list_threads")).data;
         const { data } = await call(client, "create_login_link", { thread_id: thread.id });
@@ -161,7 +161,7 @@ describe("http", () => {
 
     test("createLoginLink mints a link from a script, without an MCP client", async () => {
         h.provider.addInbound({ providerId: "q" });
-        await webhook(h, [{ type: "received", providerId: "q" }]);
+        await webhook(h, [{ type: "message", providerId: "q" }]);
         const client = await mcpClient(h);
         const [thread] = (await call(client, "list_threads")).data;
 
@@ -202,7 +202,7 @@ describe("http", () => {
     test("a mailbox token sees only its mailbox, and so do the browsers it signs in", async () => {
         h.provider.addInbound({ providerId: "s", subject: "Support question" });
         h.provider.addInbound({ providerId: "f", from: "bob@other.test", to: ["feedback@inboxer.test"], subject: "Feedback idea" });
-        await webhook(h, [{ type: "received", providerId: "s" }, { type: "received", providerId: "f" }]);
+        await webhook(h, [{ type: "message", providerId: "s" }, { type: "message", providerId: "f" }]);
         const admin = await mcpClient(h);
         const bot = await mcpClient(h, FEEDBACK_TOKEN);
 
@@ -241,7 +241,7 @@ describe("http", () => {
         h.provider.files.set("a/page", new TextEncoder().encode("<script>alert(1)</script>"));
         h.provider.files.set("a/pdf", new TextEncoder().encode("%PDF-1.7"));
         h.provider.files.set("a/big", new Uint8Array(1024 * 1024 + 1));
-        await webhook(h, [{ type: "received", providerId: "a" }]);
+        await webhook(h, [{ type: "message", providerId: "a" }]);
         const client = await mcpClient(h);
         const [thread] = (await call(client, "list_threads")).data;
         const { data } = await call(client, "get_thread", { thread_id: thread.id });
@@ -341,7 +341,7 @@ describe("http", () => {
     test("a reply from the thread view goes out after the undo window; a saved one stays a draft", async () => {
         const cookie = await signIn(h);
         h.provider.addInbound({ providerId: "r" });
-        await webhook(h, [{ type: "received", providerId: "r" }]);
+        await webhook(h, [{ type: "message", providerId: "r" }]);
         const client = await mcpClient(h);
         const [thread] = (await call(client, "list_threads")).data;
 
@@ -388,7 +388,7 @@ describe("http", () => {
     test("a catch-all thread shows the address it was written to and can be answered from it", async () => {
         const cookie = await signIn(h);
         h.provider.addInbound({ providerId: "c", to: ["info@inboxer.test"] });
-        await webhook(h, [{ type: "received", providerId: "c" }]);
+        await webhook(h, [{ type: "message", providerId: "c" }]);
         const client = await mcpClient(h);
         const [thread] = (await call(client, "list_threads")).data;
         await client.close();
@@ -450,7 +450,7 @@ describe("http", () => {
     test("context set through MCP shows in get_thread and, escaped, in the UI", async () => {
         const cookie = await signIn(h);
         h.provider.addInbound({ providerId: "q" });
-        await webhook(h, [{ type: "received", providerId: "q" }]);
+        await webhook(h, [{ type: "message", providerId: "q" }]);
         const client = await mcpClient(h);
         const [thread] = (await call(client, "list_threads")).data;
         await call(client, "set_contact", { address: "ana@customer.test", meta: { license_id: "BL-2231" }, note: "<i>VIP</i>" });
@@ -471,7 +471,7 @@ describe("http", () => {
     test("incoming HTML is never rendered in the thread view", async () => {
         const cookie = await signIn(h);
         h.provider.addInbound({ providerId: "x", text: null, html: "<script>alert(1)</script><p>Hello <b>there</b></p>" });
-        await webhook(h, [{ type: "received", providerId: "x" }]);
+        await webhook(h, [{ type: "message", providerId: "x" }]);
         const client = await mcpClient(h);
         const [thread] = (await call(client, "list_threads")).data;
         await client.close();
@@ -489,7 +489,7 @@ describe("http", () => {
         const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
 
         h.provider.addInbound({ providerId: "in-1" });
-        await webhook(h, [{ type: "received", providerId: "in-1" }]);
+        await webhook(h, [{ type: "message", providerId: "in-1" }]);
         let text = "";
         while (!text.includes("event: change")) text += (await reader.read()).value;
         abort.abort();

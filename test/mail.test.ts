@@ -17,10 +17,10 @@ describe("mail core", () => {
 
     test("ingest is idempotent by provider id", async () => {
         h.provider.addInbound({ providerId: "in-1" });
-        const [a, b] = await Promise.all([h.mail.ingest("in-1"), h.mail.ingest("in-1")]);
+        const [a, b] = await Promise.all([h.mail.ingest("fake", "in-1"), h.mail.ingest("fake", "in-1")]);
         assert.equal(a, b);
         assert.equal((await h.store.allMessages()).length, 1);
-        await h.mail.ingest("in-1");
+        await h.mail.ingest("fake", "in-1");
         assert.equal(h.provider.fetches, 2, "a known id is not fetched again");
     });
 
@@ -28,7 +28,7 @@ describe("mail core", () => {
         h.provider.addInbound({ providerId: "a", to: ["Team <FEEDBACK@inboxer.test>"] });
         h.provider.addInbound({ providerId: "b", to: ["someone@else.test"], deliveredTo: ["support@inboxer.test"] });
         h.provider.addInbound({ providerId: "c", to: ["nobody@inboxer.test"] });
-        const mailbox = async (id: string) => (await h.store.requireMessage(await h.mail.ingest(id))).mailbox;
+        const mailbox = async (id: string) => (await h.store.requireMessage(await h.mail.ingest("fake", id))).mailbox;
         assert.equal(await mailbox("a"), "feedback");
         assert.equal(await mailbox("b"), "support");
         assert.equal(await mailbox("c"), CATCHALL);
@@ -36,27 +36,27 @@ describe("mail core", () => {
 
     test("threads by In-Reply-To, then by subject and participant within the window, else a new thread", async () => {
         h.provider.addInbound({ providerId: "first", messageId: "<first@customer.test>" });
-        const first = await h.store.requireMessage(await h.mail.ingest("first"));
+        const first = await h.store.requireMessage(await h.mail.ingest("fake", "first"));
 
         h.provider.addInbound({ providerId: "byref", inReplyTo: "<first@customer.test>", subject: "Something else" });
-        assert.equal((await h.store.requireMessage(await h.mail.ingest("byref"))).thread_id, first.thread_id);
+        assert.equal((await h.store.requireMessage(await h.mail.ingest("fake", "byref"))).thread_id, first.thread_id);
 
         h.provider.addInbound({ providerId: "bysubject", subject: "RE: Fwd: trial question", from: "ana@customer.test" });
-        assert.equal((await h.store.requireMessage(await h.mail.ingest("bysubject"))).thread_id, first.thread_id);
+        assert.equal((await h.store.requireMessage(await h.mail.ingest("fake", "bysubject"))).thread_id, first.thread_id);
 
         h.provider.addInbound({ providerId: "stranger", subject: "Trial question", from: "bob@other.test" });
-        assert.notEqual((await h.store.requireMessage(await h.mail.ingest("stranger"))).thread_id, first.thread_id);
+        assert.notEqual((await h.store.requireMessage(await h.mail.ingest("fake", "stranger"))).thread_id, first.thread_id);
 
         const old = new Date(Date.now() - 40 * 24 * 3600 * 1000).toISOString();
-        h.provider.addInbound({ providerId: "old", subject: "Ancient", from: "carl@customer.test", receivedAt: old });
-        const oldThread = (await h.store.requireMessage(await h.mail.ingest("old"))).thread_id;
+        h.provider.addInbound({ providerId: "old", subject: "Ancient", from: "carl@customer.test", at: old });
+        const oldThread = (await h.store.requireMessage(await h.mail.ingest("fake", "old"))).thread_id;
         h.provider.addInbound({ providerId: "new", subject: "Re: Ancient", from: "carl@customer.test" });
-        assert.notEqual((await h.store.requireMessage(await h.mail.ingest("new"))).thread_id, oldThread);
+        assert.notEqual((await h.store.requireMessage(await h.mail.ingest("fake", "new"))).thread_id, oldThread);
     });
 
     test("unanswered threads: last message inbound and no pending draft", async () => {
         h.provider.addInbound({ providerId: "q" });
-        const id = await h.mail.ingest("q");
+        const id = await h.mail.ingest("fake", "q");
         assert.equal((await h.mail.listThreads({ status: "unanswered" }, null)).length, 1);
         const draft = await h.mail.createDraft({ replyToId: id, text: "7 days.", note: "check the license first" }, agent);
         assert.equal((await h.mail.listThreads({ status: "unanswered" }, null)).length, 0);
@@ -69,7 +69,7 @@ describe("mail core", () => {
 
     test("a reply draft derives recipients, subject and threading headers", async () => {
         h.provider.addInbound({ providerId: "q", replyTo: ["ana.alt@customer.test"], cc: ["boss@customer.test", "support@inboxer.test"] });
-        const id = await h.mail.ingest("q");
+        const id = await h.mail.ingest("fake", "q");
         const draft = await h.mail.createDraft({ replyToId: id, replyAll: true, text: "Hi" }, agent);
         assert.deepEqual(draft.to, ["ana.alt@customer.test"]);
         assert.deepEqual(draft.cc, ["boss@customer.test"]);
@@ -118,13 +118,13 @@ describe("mail core", () => {
     test("a reply to our sent message threads back through the Message-ID index", async () => {
         const sent = await h.mail.send({ mailbox: "support", to: ["ana@customer.test"], subject: "Welcome", text: "Hi" }, agent);
         h.provider.addInbound({ providerId: "answer", inReplyTo: sent.message_id, subject: "Thanks" });
-        assert.equal((await h.store.requireMessage(await h.mail.ingest("answer"))).thread_id, sent.thread_id);
+        assert.equal((await h.store.requireMessage(await h.mail.ingest("fake", "answer"))).thread_id, sent.thread_id);
     });
 
     test("delivery status never moves backwards and adopts the provider's Message-ID", async () => {
         const sent = await h.mail.send({ mailbox: "support", to: ["ana@customer.test"], subject: "S", text: "T" }, agent);
-        await h.mail.applyStatus(sent.provider_id!, "delivered", "<rewritten@provider.test>");
-        await h.mail.applyStatus(sent.provider_id!, "sent", null);
+        await h.mail.applyStatus("fake", sent.provider_id!, "delivered", "<rewritten@provider.test>");
+        await h.mail.applyStatus("fake", sent.provider_id!, "sent", null);
         const after = await h.store.requireMessage(sent.id);
         assert.equal(after.status, "delivered");
         assert.equal(after.message_id, "<rewritten@provider.test>");
@@ -133,13 +133,13 @@ describe("mail core", () => {
 
     test("the catch-all replies as the address it was written to, and starts nothing new", async () => {
         h.provider.addInbound({ providerId: "x", to: ["Info <INFO@inboxer.test>"] });
-        const id = await h.mail.ingest("x");
+        const id = await h.mail.ingest("fake", "x");
         const sent = await h.mail.reply(id, "hi", false, agent);
         assert.deepEqual([sent.mailbox, sent.from, sent.to], [CATCHALL, `"Inboxer Support" <info@inboxer.test>`, ["Ana <ana@customer.test>"]]);
         assert.equal(h.provider.sent[0]!.message.text, "hi\n\n-- Support");
 
         h.provider.addInbound({ providerId: "y", to: ["someone@else.test"] });
-        await assert.rejects(h.mail.createDraft({ replyToId: await h.mail.ingest("y"), text: "hi" }, agent), /cannot send/);
+        await assert.rejects(h.mail.createDraft({ replyToId: await h.mail.ingest("fake", "y"), text: "hi" }, agent), /cannot send/);
         await assert.rejects(h.mail.createDraft({ mailbox: CATCHALL, to: ["x@y.test"], subject: "s", text: "t" }, agent), /cannot send/);
     });
 
@@ -147,7 +147,7 @@ describe("mail core", () => {
         h.provider.addInbound({ providerId: "a", to: ["info@inboxer.test"], from: "ana@customer.test", subject: "Hello" });
         h.provider.addInbound({ providerId: "b", to: ["info@inboxer.test"], from: "bob@other.test", subject: "Hello" });
         h.provider.addInbound({ providerId: "c", to: ["sales@inboxer.test"], from: "carl@customer.test", subject: "Quote" });
-        const [a, b, c] = await Promise.all(["a", "b", "c"].map(async p => h.store.requireMessage(await h.mail.ingest(p))));
+        const [a, b, c] = await Promise.all(["a", "b", "c"].map(async p => h.store.requireMessage(await h.mail.ingest("fake", p))));
         assert.notEqual(a!.thread_id, b!.thread_id);
         assert.deepEqual(await h.mail.listAccounts(null), ["support", "feedback", "info@inboxer.test", "sales@inboxer.test"]);
         assert.deepEqual(await h.mail.listAccounts(feedbackBot.scope), ["feedback"]);
@@ -158,8 +158,8 @@ describe("mail core", () => {
     test("search is accent and case insensitive and filters by mailbox", async () => {
         h.provider.addInbound({ providerId: "a", subject: "Licencia vencida", text: "No puedo activar la canción" });
         h.provider.addInbound({ providerId: "b", to: ["feedback@inboxer.test"], subject: "Licencia", text: "otra" });
-        await h.mail.ingest("a");
-        await h.mail.ingest("b");
+        await h.mail.ingest("fake", "a");
+        await h.mail.ingest("fake", "b");
         assert.equal((await h.mail.search({ query: "LICENCIA cancion" }, null)).length, 1);
         assert.equal((await h.mail.search({ query: "licencia" }, null)).length, 2);
         assert.equal((await h.mail.search({ query: "licencia", mailbox: "feedback" }, null)).length, 1);
@@ -167,13 +167,13 @@ describe("mail core", () => {
 
     test("labels and archive apply to whole threads; a new inbound message unarchives", async () => {
         h.provider.addInbound({ providerId: "a", messageId: "<a@c.test>" });
-        const id = await h.mail.ingest("a");
+        const id = await h.mail.ingest("fake", "a");
         const threadId = (await h.store.requireMessage(id)).thread_id;
         await h.mail.label([threadId], ["trial"], [], agent);
         await h.mail.mark([threadId], { archived: true, read: true }, agent);
         assert.equal((await h.mail.listThreads({ status: "archived", label: "trial" }, null)).length, 1);
         h.provider.addInbound({ providerId: "b", inReplyTo: "<a@c.test>" });
-        await h.mail.ingest("b");
+        await h.mail.ingest("fake", "b");
         const thread = await h.store.requireThread(threadId);
         assert.equal(thread.archived, false);
         assert.equal(thread.unread, 1);
@@ -194,8 +194,8 @@ describe("mail core", () => {
     test("meta filters find threads through the contact or the thread context", async () => {
         h.provider.addInbound({ providerId: "a", from: "ana@customer.test" });
         h.provider.addInbound({ providerId: "b", from: "bob@other.test", subject: "Invoice" });
-        const anaThread = (await h.store.requireMessage(await h.mail.ingest("a"))).thread_id;
-        const bobThread = (await h.store.requireMessage(await h.mail.ingest("b"))).thread_id;
+        const anaThread = (await h.store.requireMessage(await h.mail.ingest("fake", "a"))).thread_id;
+        const bobThread = (await h.store.requireMessage(await h.mail.ingest("fake", "b"))).thread_id;
         await h.mail.setContact("ana@customer.test", { meta: { crm_id: 991 } }, agent);
         await h.mail.setThreadContext(bobThread, { meta: { ticket: "45" } }, agent);
 
@@ -209,12 +209,12 @@ describe("mail core", () => {
 
     test("getThread returns the thread context and external contacts, which survive new messages", async () => {
         h.provider.addInbound({ providerId: "a", messageId: "<a@c.test>", from: "ana@customer.test" });
-        const threadId = (await h.store.requireMessage(await h.mail.ingest("a"))).thread_id;
+        const threadId = (await h.store.requireMessage(await h.mail.ingest("fake", "a"))).thread_id;
         await h.mail.setThreadContext(threadId, { note: "promised an answer on Monday" }, agent);
         await h.mail.setContact("ana@customer.test", { meta: { crm_id: 991 } }, agent);
         await h.mail.setContact("support@inboxer.test", { note: "own address" }, agent);
         h.provider.addInbound({ providerId: "b", inReplyTo: "<a@c.test>", from: "ana@customer.test" });
-        await h.mail.ingest("b");
+        await h.mail.ingest("fake", "b");
 
         const { context, contacts, messages } = await h.mail.getThread(threadId, null);
         assert.equal(messages.length, 2);
@@ -226,8 +226,8 @@ describe("mail core", () => {
     test("a scoped actor only reaches its mailboxes; the rest reads as missing", async () => {
         h.provider.addInbound({ providerId: "s", from: "ana@customer.test", subject: "Support question" });
         h.provider.addInbound({ providerId: "f", from: "bob@other.test", to: ["feedback@inboxer.test"], subject: "Feedback idea" });
-        const support = await h.store.requireMessage(await h.mail.ingest("s"));
-        const feedback = await h.store.requireMessage(await h.mail.ingest("f"));
+        const support = await h.store.requireMessage(await h.mail.ingest("fake", "s"));
+        const feedback = await h.store.requireMessage(await h.mail.ingest("fake", "f"));
         const scope = feedbackBot.scope;
 
         assert.deepEqual(h.mail.listMailboxes(scope).map(m => m.id), ["feedback"]);
@@ -255,9 +255,9 @@ describe("mail core", () => {
     test("a token keeps one name, and the same name under several mailboxes reaches all of them", () => {
         const cfg = testConfig("/tmp/x");
         cfg.mailboxes.support!.tokens = { "feedback-bot": "other-token" };
-        assert.throws(() => assertConfig(cfg, { requireProvider: true }), /feedback-bot/);
+        assert.throws(() => assertConfig(cfg), /feedback-bot/);
         cfg.mailboxes.support!.tokens = { renamed: cfg.mailboxes.feedback!.tokens!["feedback-bot"]! };
-        assert.throws(() => assertConfig(cfg, { requireProvider: true }), /already used/);
+        assert.throws(() => assertConfig(cfg), /already used/);
         cfg.mailboxes.support!.tokens = { "feedback-bot": cfg.mailboxes.feedback!.tokens!["feedback-bot"]! };
         assert.deepEqual(mcpTokens(cfg).find(t => t.name === "feedback-bot")?.scope, ["support", "feedback"]);
         assert.equal(mcpTokens(cfg).find(t => t.name === "agent")?.scope, null);
@@ -275,7 +275,7 @@ describe("mail core", () => {
         await wait();
         assert.equal(h.provider.sent.length, 0, "nothing runs while the process is down");
 
-        const restarted = new Mail(h.store, h.provider, testConfig("/tmp/unused"));
+        const restarted = new Mail(h.store, { fake: h.provider }, testConfig("/tmp/unused"));
         await restarted.resumePending();
         await wait();
         restarted.stopPending();
@@ -293,7 +293,7 @@ describe("mail core", () => {
             { id: "doc", filename: "terms.pdf", content_type: "application/pdf", size: 4, inline: false, content_id: null },
         ] });
         h.provider.files.set("a/img", new Uint8Array([1, 2, 3]));
-        const id = await h.mail.ingest("a");
+        const id = await h.mail.ingest("fake", "a");
         assert.equal(h.provider.downloads, 2, "the missing PDF was attempted too");
 
         const image = await h.mail.getAttachment(id, "img", null);

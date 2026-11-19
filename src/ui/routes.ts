@@ -34,7 +34,11 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     const secret = cfg.ui.cookieSecret;
     const cookieOptions = { httpOnly: true, secure: true, sameSite: "Lax", path: "/", maxAge: COOKIE_MAX_AGE } as const;
 
-    const hue = V.accentHue([...new Set(Object.values(cfg.mailboxes).map(m => domainOf(m.address)))]);
+    const mailDomains = (mailboxes: { address: string; kind: string }[]): string[] =>
+        [...new Set(mailboxes.filter(m => m.kind === "mail").map(m => domainOf(m.address)))];
+    const mailboxesOf = (session: Session) => mail.listMailboxes(session.scope).filter(m => m.id !== CATCHALL);
+    const hue = V.accentHue(mailDomains(mail.listMailboxes(null).filter(m => m.id !== CATCHALL)));
+    const isChat = (mailbox: string): boolean => mail.kindOf(mailbox) === "chat";
     const own = (address: string): boolean => mail.isOwn(address);
     /** Recipients that are our own addresses are implied by the mailbox badge. */
     const shown = (m: MessageView): MessageView => ({
@@ -43,9 +47,9 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         cc: m.cc.filter(a => !own(a)),
     });
 
-    /** Mailboxes a session can send from: every one in its scope but the catch-all. */
-    const senders = (session: Session): V.Mailbox[] => mail.listMailboxes(session.scope).filter(m => m.id !== CATCHALL);
-    const domainsOf = (session: Session): string[] => [...new Set(senders(session).map(m => domainOf(m.address)))];
+    /** Mailboxes a session can start new mail from: the mail ones in its scope it may write in, but the catch-all. */
+    const senders = (session: Session): V.Mailbox[] => mailboxesOf(session).filter(m => m.kind === "mail" && mail.uiCanWrite(m.id));
+    const domainsOf = (session: Session): string[] => mailDomains(mailboxesOf(session));
 
     const page = async (c: Context<UiEnv>, title: string, body: V.View, current: V.Page, status: 200 | 400 | 401 | 404 = 200, fullScreen = false) => {
         const session = c.get("session");
@@ -106,7 +110,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const draft = await mail.requireMessage(id, c.get("session").scope);
         if (draft.status === "discarded") return V.draftDone(id, S.discarded);
         if (draft.status !== "draft") return V.messageBubble(shown(toView(draft)), false);
-        return V.draftCard(draft);
+        return V.draftCard(draft, mail.uiCanWrite(draft.mailbox));
     };
 
     app.get("/", async c => {
@@ -133,7 +137,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
             return c.body(null, 204);
         }
         const form = { to: draft.to.join(", "), cc: draft.cc.join(", "), subject: draft.subject, text: draft.text };
-        return c.html(V.draftEditor(draft, form, null));
+        return c.html(V.draftEditor(draft, form, null, isChat(draft.mailbox)));
     });
 
     app.post("/drafts/:id/save", async c => {
@@ -152,7 +156,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
             c.header("HX-Refresh", "true");
             return c.html(await draftView(c, id));
         } catch (err) {
-            if (err instanceof ConflictError) return c.html(V.draftEditor(err.current, form, err.current));
+            if (err instanceof ConflictError) return c.html(V.draftEditor(err.current, form, err.current, isChat(err.current.mailbox)));
             if (err instanceof InvalidRequestError) return c.html(V.draftDone(id, err.message));
             throw err;
         }
@@ -213,7 +217,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const filter = inboxFilter(c);
         const threads = await mail.listThreads({ mailbox: filter.mailbox || undefined, status: filter.status as ThreadStatus, limit: 200 }, session.scope);
         const accounts = await mail.listAccounts(session.scope);
-        return V.threadList(threads, { accounts, accountOf: t => mail.accountOf(t), addressOf: a => mail.addressOf(a), domains: domainsOf(session), filter, own, current });
+        return V.threadList(threads, { accounts, accountOf: t => mail.accountOf(t), addressOf: a => mail.addressOf(a), domains: domainsOf(session), filter, own, isChat, current });
     };
 
     app.get("/inbox", async c => page(c, S.navInbox, V.inboxPage(await threadList(c, null), null), "inbox"));
@@ -230,11 +234,12 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const people = thread.participants.filter(p => !own(p));
         const entries = await Promise.all(messages.map(async m => ({
             at: m.date,
-            view: m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id)) : V.messageBubble(shown(m), people.length > 1),
+            view: m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id), mail.uiCanWrite(m.mailbox)) : V.messageBubble(shown(m), people.length > 1),
         })));
         const account = mail.accountOf(thread);
-        const reply = { allowed: account !== CATCHALL && (thread.mailbox === CATCHALL || senders(session).some(m => m.id === thread.mailbox)), replyAll: people.length > 1 };
-        return { thread, view: V.threadView(thread, entries, { context, contacts }, { back, filter: inboxFilter(c), own, account, reply }) };
+        const chat = isChat(thread.mailbox);
+        const reply = { allowed: account !== CATCHALL && mail.uiCanWrite(thread.mailbox), replyAll: people.length > 1 && !chat };
+        return { thread, view: V.threadView(thread, entries, { context, contacts }, { back, filter: inboxFilter(c), own, account, chat, reply }) };
     };
 
     app.get("/threads/:id", async c => {

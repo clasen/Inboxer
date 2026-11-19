@@ -2,7 +2,7 @@
 
 Your own mail layer for agents. Inboxer stores every email that comes in or goes out, gives agents an MCP server to read, draft and send, and gives you a small web UI to review drafts from your phone before they leave.
 
-Inboxer has no business rules. It does not decide what to answer or when. Each consumer, such as a scheduled agent, a support bot or you in a chat, brings its own rules in its prompt and uses the same tools. Sending goes through a **provider**. Inboxer ships with [Resend](https://resend.com), and the provider interface lets you plug in another service without touching the rest.
+Inboxer has no business rules. It does not decide what to answer or when. Each consumer, such as a scheduled agent, a support bot or you in a chat, brings its own rules in its prompt and uses the same tools. Sending goes through a **provider**. Inboxer ships with [Resend](https://resend.com) for mail and [Kapso](https://kapso.ai) for WhatsApp, and the provider interface lets you plug in another service without touching the rest.
 
 - **One process, one SQLite file.** Persistence uses [DeepBase](https://github.com/clasen/DeepBase) on the runtime's built-in `node:sqlite`, so there is nothing to compile and no external database.
 - **Webhooks plus a backup sync.** Inbound mail and delivery events arrive by webhook. A periodic sync picks up anything a webhook missed.
@@ -46,17 +46,17 @@ const config = {
     syncIntervalMin: 10,
     threadWindowDays: 30,
     mailboxes: {
-        support:  { address: "support@example.com",  name: "Example Support",
+        support:  { address: "support@example.com",  name: "Example Support", provider: "resend",
                     signatureText: "-- Example Support", signatureHtml: "<p>-- Example Support</p>" },
-        feedback: { address: "feedback@example.com", name: "Example" }
+        feedback: { address: "feedback@example.com", name: "Example", provider: "resend" }
     },
-    provider: { type: "resend", apiKey: "re_...", webhookSecret: "whsec_..." },
+    providers: { resend: { type: "resend", apiKey: "re_...", webhookSecret: "whsec_..." } },
     mcp: { tokens: { "support-schedule": "...", "laptop": "..." }, maxAttachmentMb: 10 },
     ui: { cookieSecret: "...", loginLinkTtlMin: 10, undoSec: 10, maxUploadMb: 20 }
 };
 ```
 
-Load it from wherever your project keeps configuration: a JSON file, environment variables, a secrets manager. `provider.apiKey`, `provider.webhookSecret`, the MCP tokens and `ui.cookieSecret` are secrets, so keep them out of Git. [Configre](https://github.com/clasen/Configre) is one way to do that: it merges a public file and an encrypted secret file into one object.
+Load it from wherever your project keeps configuration: a JSON file, environment variables, a secrets manager. The providers' keys and webhook secrets, the MCP tokens and `ui.cookieSecret` are secrets, so keep them out of Git. [Configre](https://github.com/clasen/Configre) is one way to do that: it merges a public file and an encrypted secret file into one object.
 
 Generate each token and the cookie secret with:
 
@@ -106,7 +106,7 @@ Everything lives under one origin:
 
 The function is synchronous, so a host that needs a synchronous factory can call it directly. Requests wait for `ready` before they are handled.
 
-`options.provider` takes a provider instance instead of resolving `cfg.provider.type`. See [Providers](#providers).
+`options.providers` takes provider instances by name instead of resolving `cfg.providers`. See [Providers](#providers).
 
 `createLoginLink(cfg, { label?, threadId? })` mints a one-time login link from a script on the server. See [Signing in](#signing-in).
 
@@ -134,10 +134,10 @@ With roster's default isolation the site runs in its own process, so the databas
 | --- | --- |
 | `publicUrl` | Base URL used in login links |
 | `dataDir` | Absolute directory for `inboxer.db` and the `attachments/` folder |
-| `syncIntervalMin` | Minutes between backup syncs with the provider |
+| `syncIntervalMin` | Minutes between backup syncs with each provider |
 | `threadWindowDays` | How far back a subject match may join an existing thread |
-| `mailboxes.<id>` | `address`, `name`, optional `signatureText` and `signatureHtml` |
-| `provider` | `type` plus the provider's own options, such as Resend's `apiKey` and `webhookSecret` |
+| `mailboxes.<id>` | `address`, `name`, `provider` (a key of `providers`), optional `signatureText`, `signatureHtml` and `uiReadOnly` |
+| `providers.<name>` | `type` plus the provider's own options, such as Resend's `apiKey` and `webhookSecret`. The name is the webhook route and is stored on every message, so keep it once there is data |
 | `mcp.tokens.<name>` | Bearer tokens for MCP that reach every mailbox; the name is recorded as the actor in the audit log |
 | `mailboxes.<id>.tokens.<name>` | Bearer tokens that reach only that mailbox |
 | `mcp.maxAttachmentMb` | Largest attachment `get_attachment` returns as content |
@@ -148,33 +148,38 @@ With roster's default isolation the site runs in its own process, so the databas
 
 `mailboxes` is an object keyed by id rather than an array, so a per-environment override can replace one mailbox without repeating the others. Mail sent to an address that matches no mailbox lands in the reserved `catchall` mailbox, grouped by that address. Replies go out from the address that was written to, with the name and signature of a mailbox on the same domain; the catch-all cannot start new mail.
 
+`uiReadOnly: true` makes a mailbox an audit view: browser sessions read, label, archive and annotate, but cannot draft or send in it. MCP tokens are not affected.
+
 ## Providers
 
-A provider adapts one email service to the `MailProvider` interface. Nothing outside the provider knows which service is in use: messages store the provider's name and id, and the webhook route is `/webhooks/<name>`.
+A provider adapts one messaging service to the `MailProvider` interface. Nothing outside the provider knows which service is in use: messages store the provider's name and id, and the webhook route is `/webhooks/<name>`. One instance can run several providers; each mailbox names the one it uses.
+
+A provider is of one of two kinds. A `mail` provider has subjects, several recipients, HTML and threading by headers. A `chat` provider serves one mailbox, a phone line: addresses are phone numbers (`+5491155550000`), a thread is the whole conversation with one number, and a message is plain text with at most one attachment.
 
 ```typescript
 interface MailProvider {
-    readonly name: string;
+    readonly name: string;                 // its key in `providers`
+    readonly kind: "mail" | "chat";
     parseWebhook(req: { headers: Headers; body: string }): ProviderEvent[];  // throws WebhookSignatureError
-    getInbound(providerId: string): Promise<InboundMessage>;
-    listInbound(since: Date): AsyncIterable<string>;
+    getMessage(providerId: string): Promise<ProviderMessage>;
+    listMessages(since: Date): AsyncIterable<MessageEvent>;
     listOutbound(since: Date): AsyncIterable<{ providerId: string; status: DeliveryStatus }>;
     send(message: OutboundMessage, idempotencyKey: string): Promise<{ providerId: string }>;
     getAttachment(providerMessageId: string, attachmentId: string): Promise<Uint8Array>;
 }
 
 type ProviderEvent =
-    | { type: "received"; providerId: string }
+    | { type: "message"; providerId: string; message?: ProviderMessage }  // MessageEvent
     | { type: "status"; providerId: string; status: DeliveryStatus; messageId: string | null };
 
-type DeliveryStatus = "sent" | "delivered" | "bounced" | "failed";
+type DeliveryStatus = "sent" | "delivered" | "read" | "bounced" | "failed";
 ```
 
-`OutboundMessage.attachments` carries the draft's files as `{ filename, contentType, content }`. `InboundMessage.attachments` lists `{ id, filename, content_type, size, inline, content_id }`; `inline` marks an image embedded in the body by `cid:`. `send()` must not deliver twice for the same `idempotencyKey`. Inboxer uses the draft id, so retrying a failed send is safe. Pass your own implementation with `createInboxer(cfg, { provider })`. All the types above are exported from `inboxer`.
+`OutboundMessage.attachments` carries the draft's files as `{ filename, contentType, content }`. `ProviderMessage.attachments` lists `{ id, filename, content_type, size, inline, content_id }`; `inline` marks an image embedded in the body by `cid:`. A `ProviderMessage` has a `direction`: `out` ones were sent on the account by anyone, and Inboxer stores those it did not send itself, so a thread shows the whole conversation. A message event may carry the message; without it Inboxer calls `getMessage`. `send()` must not deliver twice for the same `idempotencyKey`. Inboxer uses the draft id, so retrying a failed send is safe. Pass your own implementations with `createInboxer(cfg, { providers: { <name>: instance } })`. All the types above are exported from `inboxer`.
 
 ### Resend
 
-`provider: { type: "resend", apiKey, webhookSecret }`.
+`providers: { resend: { type: "resend", apiKey, webhookSecret } }`.
 
 Resend handles sending and receiving. Inboxer talks to it in three ways:
 
@@ -202,14 +207,28 @@ The app's host name does not have to match the addresses. A name like `inboxer.`
 4. **MX — receiving.** Name `@` (the domain itself), value `inbound-smtp.us-east-1.amazonaws.com`, priority `10`. From then on every address of the domain is delivered to Resend and no longer to your previous mail host or forwarding rules; mail to addresses you did not configure lands in Inboxer's `catchall` mailbox. To keep the root domain on another host, put Inboxer's addresses on a subdomain such as `help.example.com` and add this MX there.
 
    Wait until Resend shows the domain as verified. That usually takes minutes, sometimes hours while DNS propagates.
-5. **Create an API key.** In *API Keys*, create a key with full access: Inboxer reads received and sent emails, not just sends. Put it in `provider.apiKey`.
+5. **Create an API key.** In *API Keys*, create a key with full access: Inboxer reads received and sent emails, not just sends. Put it in the provider's `apiKey`.
 6. **Deploy Inboxer.** Point `inboxer.example.com` at your server, serve it over HTTPS (roster-server issues certificates on its own; otherwise use your reverse proxy), and set `publicUrl` to that URL. The webhook and login links depend on it.
-7. **Create the webhook.** In *Webhooks*, add an endpoint at `https://inboxer.example.com/webhooks/resend` with the `email.received`, `email.sent`, `email.delivered`, `email.bounced`, `email.failed` and `email.suppressed` events. Copy its signing secret into `provider.webhookSecret`.
+7. **Create the webhook.** In *Webhooks*, add an endpoint at `https://inboxer.example.com/webhooks/resend` with the `email.received`, `email.sent`, `email.delivered`, `email.bounced`, `email.failed` and `email.suppressed` events. Copy its signing secret into the provider's `webhookSecret`.
 8. **Restart and test.** Restart Inboxer so it loads the secrets. Send an email from an outside account to `support@example.com`. Within seconds it should appear in the UI's Inbox and in `list_threads`. Resend's webhook page shows each delivery and Inboxer's response; a `401` means the signing secret is wrong.
 
 Inbound webhooks carry no body, so Inboxer fetches each message from the receiving API. The webhook answers `500` when processing fails, so Resend retries; processing is idempotent by Resend id.
 
 Inboxer sets its own `Message-ID` (`<uuid@your-domain>`) on outgoing mail. If the provider reports a different one in a delivery event, Inboxer adopts it, so replies still find the thread. When neither header matches, the subject-and-participant rule keeps the conversation together.
+
+### Kapso (WhatsApp)
+
+```javascript
+mailboxes: { whatsapp: { address: "+12025550100", name: "Example", provider: "whatsapp" } },
+providers: { whatsapp: { type: "kapso", apiKey, webhookSecret, phoneNumberId } }
+```
+
+A WhatsApp number becomes a mailbox whose contacts are phone numbers. Inboxer mirrors the line: what people write, and what anyone sends on it, such as a bot that talks to Kapso directly. Buttons, links and templates show as Kapso describes them in text; images, documents and voice notes are attachments, a voice note with its transcript.
+
+1. In Kapso, add a webhook of kind `kapso` on the phone number, pointing at `<publicUrl>/webhooks/<name>` (here `/webhooks/whatsapp`), with the events `whatsapp.message.received`, `whatsapp.message.sent`, `whatsapp.message.delivered`, `whatsapp.message.read` and `whatsapp.message.failed`. A number takes several webhooks, so one that already feeds a bot stays as it is. Its secret is `webhookSecret`.
+2. `apiKey` is a Kapso API key and `phoneNumberId` the number's id.
+
+The first sync reads the line's whole history, so conversations that began before Inboxer was attached are there. A reply is plain text, or one file with the text as its caption. WhatsApp only delivers free text within 24 hours of the person's last message; after that the send fails and the message shows as `failed`. Templates and starting a chat from the review UI are not supported. The Cloud API takes no idempotency key, so a send whose response was lost can repeat on retry.
 
 ## MCP
 
@@ -359,10 +378,11 @@ DeepBase is a nested key-value store without secondary indexes, so Inboxer maint
 | `msgid/<sha1(Message-ID)>` | Message lookup for threading |
 | `ext/<provider>/<sha1(provider id)>` | Idempotent ingest and delivery updates |
 | `contacts/<sha1(address)>` · `thread_context/<id>` | Context set through MCP |
+| `sync_cursor/<provider>` | When each provider's last sync started |
 | `audit/<id>` | Sends, edits, discards, labels, context changes, login links and session changes, with the actor |
 | `login_links/<sha256>` · `sessions/<sha256>` | UI access |
 
-Inbound attachments are copied to `<dataDir>/attachments/<message id>/` when the message arrives, so they outlive the provider's retention. One that fails to download is fetched again the first time it is opened.
+Attachments of messages the provider holds are copied to `<dataDir>/attachments/<message id>/` when the message arrives, so they outlive the provider's retention. One that fails to download is fetched again the first time it is opened.
 
 Search scans messages in memory. That is enough for support volumes; a dedicated full-text index can be added later without changing the tools.
 

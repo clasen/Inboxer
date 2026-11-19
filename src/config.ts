@@ -23,23 +23,30 @@ function requirePositive(value: unknown, path: string): void {
     if (typeof value !== "number" || !(value > 0)) fail(path, "a positive number");
 }
 
-/** Asserts the shape `createInboxer` relies on. */
-export function assertConfig(cfg: InboxerConfig, { requireProvider }: { requireProvider: boolean }): void {
+/** Asserts the shape `createInboxer` relies on. `injectedProviders` names provider instances passed in place of `cfg.providers`. */
+export function assertConfig(cfg: InboxerConfig, injectedProviders?: string[]): void {
     requireString(cfg.publicUrl, "publicUrl");
     requireString(cfg.dataDir, "dataDir");
     if (!isAbsolute(cfg.dataDir)) fail("dataDir", "an absolute path");
     requirePositive(cfg.syncIntervalMin, "syncIntervalMin");
     requirePositive(cfg.threadWindowDays, "threadWindowDays");
 
+    if (!injectedProviders) {
+        if (!cfg.providers || typeof cfg.providers !== "object") fail("providers", "an object keyed by provider name");
+        for (const [name, provider] of Object.entries(cfg.providers)) requireString(provider?.type, `providers.${name}.type`);
+    }
+    const providers = injectedProviders ?? Object.keys(cfg.providers);
+
     if (!cfg.mailboxes || typeof cfg.mailboxes !== "object") fail("mailboxes", "an object keyed by mailbox id");
     if (CATCHALL in cfg.mailboxes) fail(`mailboxes.${CATCHALL}`, "absent (the id is reserved)");
     for (const [id, mailbox] of Object.entries(cfg.mailboxes)) {
         requireString(mailbox.address, `mailboxes.${id}.address`);
         requireString(mailbox.name, `mailboxes.${id}.name`);
+        if (!providers.includes(mailbox.provider)) fail(`mailboxes.${id}.provider`, `one of: ${providers.join(", ")}`);
+        if (mailbox.uiReadOnly !== undefined && mailbox.uiReadOnly !== true) fail(`mailboxes.${id}.uiReadOnly`, "true or absent");
         if (mailbox.tokens !== undefined && (!mailbox.tokens || typeof mailbox.tokens !== "object")) fail(`mailboxes.${id}.tokens`, "an object of named tokens");
     }
 
-    if (requireProvider) requireString(cfg.provider?.type, "provider.type");
     if (!cfg.mcp?.tokens || typeof cfg.mcp.tokens !== "object") fail("mcp.tokens", "an object of named tokens");
     for (const [name, token] of Object.entries(cfg.mcp.tokens)) requireString(token, `mcp.tokens.${name}`);
     mcpTokens(cfg);

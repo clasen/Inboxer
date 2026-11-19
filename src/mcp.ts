@@ -51,7 +51,7 @@ function attachmentContent(cfg: Cfg, messageId: string, meta: AttachmentMeta, bo
     return { type: "resource" as const, resource: { uri, mimeType: meta.content_type, blob: data } };
 }
 
-const addresses = z.array(z.string()).describe("Addresses, e.g. \"Ana <ana@example.com>\" or \"ana@example.com\"");
+const addresses = z.array(z.string()).describe("Addresses, e.g. \"Ana <ana@example.com>\" or \"ana@example.com\"; in a chat mailbox, one phone number, e.g. \"+5491155550000\"");
 const isoDate = z.string().describe("ISO 8601 timestamp");
 const metaFilter = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
     .describe("Every pair must match the thread's context or a participant's contact; values compare as text");
@@ -63,7 +63,7 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     const server = new McpServer({ name: "inboxer", version: VERSION });
     const cfg = mail.cfg;
 
-    server.registerTool("list_mailboxes", { description: "Mailboxes this token reaches; tokens for every mailbox also see the catch-all for unknown recipients." },
+    server.registerTool("list_mailboxes", { description: "Mailboxes this token reaches, each of kind mail or chat (a phone line, e.g. WhatsApp, where addresses are phone numbers and a thread is the whole conversation with one number); tokens for every mailbox also see the catch-all for unknown recipients." },
         wrap(cfg, async () => mail.listMailboxes(actor.scope)));
 
     server.registerTool("list_threads", {
@@ -100,12 +100,12 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     }));
 
     server.registerTool("get_contact", {
-        description: "Context stored for an email address: meta (e.g. ids in other systems) and a note. null when there is none.",
+        description: "Context stored for an email address or phone number: meta (e.g. ids in other systems) and a note. null when there is none.",
         inputSchema: { address: z.string() },
     }, wrap(cfg, async ({ address }) => mail.getContact(address, actor.scope)));
 
     server.registerTool("set_contact", {
-        description: "Attach context to an email address, e.g. meta { license_id: \"BL-2231\" } or a note. Merges with what is stored. Shown in get_thread and in the review UI, and searchable with meta filters.",
+        description: "Attach context to an email address or phone number, e.g. meta { license_id: \"BL-2231\" } or a note. Merges with what is stored. Shown in get_thread and in the review UI, and searchable with meta filters.",
         inputSchema: { address: z.string(), meta: metaPatch.optional(), note: notePatch.optional() },
     }, wrap(cfg, async ({ address, meta, note }) => mail.setContact(address, { meta, note }, actor)));
 
@@ -125,7 +125,7 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     }, wrap(cfg, async ({ ids, read, archived }) => ({ updated: await mail.mark(ids, { read, archived }, actor) })));
 
     server.registerTool("create_draft", {
-        description: "Create a draft for a human to review. Pass reply_to_id to reply (recipients, subject and threading are derived), or mailbox + to + subject for a new conversation. note is shown to the reviewer. The result's url opens the draft in the review UI; share it with the user.",
+        description: "Create a draft for a human to review. Pass reply_to_id to reply (recipients, subject and threading are derived), or mailbox + to + subject for a new conversation (a chat mailbox takes one phone number and no subject, cc, bcc or html). note is shown to the reviewer. The result's url opens the draft in the review UI; share it with the user.",
         inputSchema: {
             mailbox: z.string().optional(),
             reply_to_id: z.string().optional().describe("Message id to reply to"),
@@ -171,13 +171,13 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
         wrap(cfg, async ({ id }) => messageView(cfg, toView(await mail.sendDraft(id, actor)))));
 
     server.registerTool("send", {
-        description: "Send a new message directly, without review. Use only when your rules allow it.",
+        description: "Send a new message directly, without review. Use only when your rules allow it. subject is required in a mail mailbox; a chat mailbox takes one phone number and text only, and the message joins the conversation with that number.",
         inputSchema: {
             mailbox: z.string(),
             to: addresses,
             cc: addresses.optional(),
             bcc: addresses.optional(),
-            subject: z.string(),
+            subject: z.string().optional(),
             text: z.string(),
             html: z.string().optional(),
         },
@@ -189,7 +189,7 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     }, wrap(cfg, async ({ message_id, text, reply_all }) => messageView(cfg, toView(await mail.reply(message_id, text, reply_all ?? false, actor)))));
 
     server.registerTool("get_attachment", {
-        description: "Content of an inbound attachment: images as images, text as text, anything else (e.g. PDF) as an embedded resource. Larger than the server's limit returns an error.",
+        description: "Content of an attachment: images as images, text as text, anything else (e.g. PDF) as an embedded resource. Larger than the server's limit returns an error.",
         inputSchema: { message_id: z.string(), attachment_id: z.string() },
     }, async ({ message_id, attachment_id }) => {
         try {

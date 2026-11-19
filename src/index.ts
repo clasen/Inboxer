@@ -5,14 +5,14 @@ import { Access } from "./auth.ts";
 import { assertConfig } from "./config.ts";
 import { Mail } from "./core/mail.ts";
 import { Sync } from "./core/sync.ts";
-import { resolveProvider } from "./provider/index.ts";
+import { resolveProviders } from "./provider/index.ts";
 import type { MailProvider } from "./provider/types.ts";
 import { Store } from "./store.ts";
 import type { InboxerConfig } from "./types.ts";
 
 export interface InboxerOptions {
-    /** A provider instance to use instead of resolving `cfg.provider.type`. */
-    provider?: MailProvider;
+    /** Provider instances by name, to use instead of resolving `cfg.providers`. */
+    providers?: Record<string, MailProvider>;
 }
 
 export interface Inboxer {
@@ -27,10 +27,10 @@ export interface Inboxer {
 }
 
 export function createInboxer(cfg: InboxerConfig, options: InboxerOptions = {}): Inboxer {
-    assertConfig(cfg, { requireProvider: !options.provider });
-    const provider = options.provider ?? resolveProvider(cfg.provider);
+    assertConfig(cfg, options.providers && Object.keys(options.providers));
+    const providers = options.providers ?? resolveProviders(cfg.providers);
     const store = new Store(cfg.dataDir);
-    const mail = new Mail(store, provider, cfg);
+    const mail = new Mail(store, providers, cfg);
     const access = new Access(store, cfg);
     const sync = new Sync(mail, cfg.syncIntervalMin);
 
@@ -69,7 +69,7 @@ export interface LoginLinkOptions {
  * Opens the database, stores the link and closes it; the session it creates reaches every mailbox.
  */
 export async function createLoginLink(cfg: InboxerConfig, options: LoginLinkOptions = {}): Promise<{ url: string; expires_at: string }> {
-    assertConfig(cfg, { requireProvider: false });
+    assertConfig(cfg);
     const store = new Store(cfg.dataDir);
     await store.connect();
     try {
@@ -82,12 +82,14 @@ export async function createLoginLink(cfg: InboxerConfig, options: LoginLinkOpti
 export { WebhookSignatureError } from "./provider/types.ts";
 export type {
     DeliveryStatus,
-    InboundMessage,
     MailProvider,
+    MessageEvent,
     OutboundAttachment,
     OutboundMessage,
     OutboundStatus,
     ProviderEvent,
+    ProviderKind,
+    ProviderMessage,
     WebhookRequest,
 } from "./provider/types.ts";
 export type { InboxerConfig, MailboxConfig, ProviderConfig } from "./types.ts";

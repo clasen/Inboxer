@@ -170,12 +170,12 @@ export class Store {
         return Object.values((await this.db.get("sessions")) ?? {});
     }
 
-    getSyncCursor(): Promise<string | null> {
-        return this.db.get("sync", "last_started_at");
+    getSyncCursor(provider: string): Promise<string | null> {
+        return this.db.get("sync_cursor", provider);
     }
 
-    setSyncCursor(at: string): Promise<unknown> {
-        return this.db.set("sync", "last_started_at", at);
+    setSyncCursor(provider: string, at: string): Promise<unknown> {
+        return this.db.set("sync_cursor", provider, at);
     }
 }
 

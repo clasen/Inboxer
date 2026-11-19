@@ -33,15 +33,16 @@ export function buildApp(mail: Mail, access: Access, cfg: InboxerConfig, ready: 
 
     // A failure answers 500 so the provider retries; ingest is idempotent.
     app.post("/webhooks/:provider", async c => {
-        if (c.req.param("provider") !== mail.provider.name) return c.notFound();
+        const name = c.req.param("provider");
+        if (!Object.hasOwn(mail.providers, name)) return c.notFound();
         let events;
         try {
-            events = mail.provider.parseWebhook({ headers: c.req.raw.headers, body: await c.req.text() });
+            events = mail.providers[name]!.parseWebhook({ headers: c.req.raw.headers, body: await c.req.text() });
         } catch (err) {
             if (err instanceof WebhookSignatureError) return c.text("Invalid signature", 401);
             throw err;
         }
-        for (const event of events) await mail.applyEvent(event);
+        for (const event of events) await mail.applyEvent(name, event);
         return c.json({ ok: true });
     });
 

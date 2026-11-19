@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
-import type { DeliveryStatus, MailProvider, ProviderEvent } from "../provider/types.ts";
+import type { DeliveryStatus, MailProvider, ProviderEvent, ProviderKind, ProviderMessage } from "../provider/types.ts";
 import { reaches } from "../config.ts";
 import { NotFoundError, nid, type Store } from "../store.ts";
 import { CATCHALL, type Actor, type Contact, type Context, type AttachmentMeta, type InboxerConfig, type MailboxConfig, type Message, type MetaValue, type PendingAction, type Scope, type Thread } from "../types.ts";
 import { AttachmentFiles } from "./attachments.ts";
-import { bareAddress, domainOf, formatAddress } from "./address.ts";
+import { bareAddress, domainOf, formatAddress, phoneAddress } from "./address.ts";
 import { mergeContext, metaMatches, type ContextPatch } from "./context.ts";
 import { htmlToText, replySubject, textToHtml, tokenize } from "./text.ts";
-import { messageTime, participantsOf, refreshThread, resolveThreadId, threadMessages } from "./threads.ts";
+import { chatThreadId, messageTime, participantsOf, refreshThread, resolveThreadId, threadMessages } from "./threads.ts";
 
-const STATUS_RANK: Record<DeliveryStatus, number> = { sent: 1, delivered: 2, bounced: 3, failed: 3 };
+const STATUS_RANK: Record<DeliveryStatus, number> = { sent: 1, delivered: 2, read: 3, bounced: 4, failed: 4 };
 
 export class ConflictError extends Error {
     readonly current: Message;
@@ -25,6 +25,14 @@ export class InvalidRequestError extends Error {
         super(message);
         this.name = "InvalidRequestError";
     }
+}
+
+/** The one phone number a chat message goes to. */
+function chatRecipient(to: string[]): string[] {
+    if (to.length !== 1) throw new InvalidRequestError("a chat message takes exactly one recipient");
+    const phone = phoneAddress(to[0]!);
+    if (!phone) throw new InvalidRequestError(`"${to[0]}" is not a phone number`);
+    return [phone];
 }
 
 export type ThreadStatus = "unanswered" | "all" | "archived";
@@ -95,7 +103,7 @@ export interface MessageView {
 /** The mail domain: everything the MCP tools, the UI and the webhook do goes through here. */
 export class Mail {
     readonly store: Store;
-    readonly provider: MailProvider;
+    readonly providers: Record<string, MailProvider>;
     readonly cfg: InboxerConfig;
     private readonly ownAddresses: Set<string>;
     private readonly domains: Set<string>;
@@ -104,12 +112,19 @@ export class Mail {
     /** Fires "change" after every write, so open pages can refresh. */
     readonly changes = new EventTarget();
 
-    constructor(store: Store, provider: MailProvider, cfg: InboxerConfig) {
+    constructor(store: Store, providers: Record<string, MailProvider>, cfg: InboxerConfig) {
         this.store = store;
-        this.provider = provider;
+        this.providers = providers;
         this.cfg = cfg;
-        this.ownAddresses = new Set(Object.values(cfg.mailboxes).map(m => bareAddress(m.address)));
-        this.domains = new Set(Object.values(cfg.mailboxes).map(m => domainOf(m.address)));
+        const mailboxes = Object.values(cfg.mailboxes);
+        for (const [name, provider] of Object.entries(providers)) {
+            if (provider.name !== name) throw new Error(`Provider "${provider.name}" is registered as "${name}"`);
+            if (provider.kind === "chat" && mailboxes.filter(m => m.provider === name).length !== 1) {
+                throw new Error(`Invalid inboxer config: chat provider "${name}" must serve exactly one mailbox`);
+            }
+        }
+        this.ownAddresses = new Set(mailboxes.map(m => bareAddress(m.address)));
+        this.domains = new Set(mailboxes.filter(m => this.provider(m.provider).kind === "mail").map(m => domainOf(m.address)));
         this.files = new AttachmentFiles(cfg.dataDir);
     }
 
@@ -120,14 +135,35 @@ export class Mail {
         return result;
     }
 
-    listMailboxes(scope: Scope): { id: string; address: string; name: string }[] {
+    private provider(name: string): MailProvider {
+        const provider = this.providers[name];
+        if (!provider) throw new Error(`Unknown provider "${name}"`);
+        return provider;
+    }
+
+    /** The catch-all only collects mail. */
+    kindOf(mailbox: string): ProviderKind {
+        const configured = this.cfg.mailboxes[mailbox];
+        return configured ? this.provider(configured.provider).kind : "mail";
+    }
+
+    /** Whether the review UI may draft and send in `mailbox`. */
+    uiCanWrite(mailbox: string): boolean {
+        return !this.cfg.mailboxes[mailbox]?.uiReadOnly;
+    }
+
+    private assertCanWrite(mailbox: string, actor: Actor): void {
+        if (actor.kind === "ui" && !this.uiCanWrite(mailbox)) throw new InvalidRequestError(`Mailbox "${mailbox}" is read-only in the review UI`);
+    }
+
+    listMailboxes(scope: Scope): { id: string; address: string; name: string; kind: ProviderKind }[] {
         return [
-            ...Object.entries(this.cfg.mailboxes).map(([id, m]) => ({ id, address: m.address, name: m.name })),
-            { id: CATCHALL, address: "*", name: "Catch-all" },
+            ...Object.entries(this.cfg.mailboxes).map(([id, m]) => ({ id, address: m.address, name: m.name, kind: this.kindOf(id) })),
+            { id: CATCHALL, address: "*", name: "Catch-all", kind: "mail" as const },
         ].filter(m => reaches(scope, m.id));
     }
 
-    /** A configured mailbox address or any other address on its domains, such as one the catch-all received. */
+    /** A configured mailbox address or any other address on a mail domain, such as one the catch-all received. */
     isOwn(address: string): boolean {
         const bare = bareAddress(address);
         return this.ownAddresses.has(bare) || this.domains.has(domainOf(bare));
@@ -180,18 +216,18 @@ export class Mail {
         }
     }
 
-    private mailboxFor(addresses: string[]): string {
+    /** A chat provider serves one mailbox; mail goes to the mailbox it is addressed to, else to the catch-all. */
+    private mailboxFor(provider: MailProvider, addresses: string[]): string {
+        const served = Object.entries(this.cfg.mailboxes).filter(([, m]) => m.provider === provider.name);
+        if (provider.kind === "chat") return served[0]![0];
         const bare = addresses.map(bareAddress);
-        for (const [id, mailbox] of Object.entries(this.cfg.mailboxes)) {
-            if (bare.includes(bareAddress(mailbox.address))) return id;
-        }
-        return CATCHALL;
+        return served.find(([, m]) => bare.includes(bareAddress(m.address)))?.[0] ?? CATCHALL;
     }
 
     /** Who sends for `id`; the catch-all answers as `address`, with the name and signature of a mailbox on that domain. */
     private sendingMailbox(id: string, address: string | null): MailboxConfig {
         const peer = id === CATCHALL && address ? Object.values(this.cfg.mailboxes).find(m => domainOf(m.address) === domainOf(address)) : undefined;
-        if (peer && address) return { name: peer.name, address: bareAddress(address), signatureText: peer.signatureText, signatureHtml: peer.signatureHtml };
+        if (peer && address) return { name: peer.name, address: bareAddress(address), provider: peer.provider, signatureText: peer.signatureText, signatureHtml: peer.signatureHtml };
         const mailbox = this.cfg.mailboxes[id];
         if (!mailbox) throw new InvalidRequestError(`Mailbox "${id}" cannot send (configured: ${Object.keys(this.cfg.mailboxes).join(", ")})`);
         return mailbox;
@@ -200,14 +236,19 @@ export class Mail {
     // Inbound
 
     /**
-     * Stores an inbound message once per provider id and returns its id. Attachments are copied to
-     * disk right away; one that fails to download is fetched again the first time it is opened.
+     * Stores a message the provider holds once per provider id and returns its id: one received, or
+     * one sent on the account by someone else. A message already known only takes the delivery
+     * status that came with it. Attachments are copied to disk right away; one that fails to
+     * download is fetched again the first time it is opened.
      */
-    async ingest(providerId: string): Promise<string> {
-        const known = await this.store.lookupProviderId(this.provider.name, providerId);
-        if (known) return known;
-        const inbound = await this.provider.getInbound(providerId);
-        const id = await this.storeInbound(providerId, inbound);
+    async ingest(providerName: string, providerId: string, given?: ProviderMessage): Promise<string> {
+        const provider = this.provider(providerName);
+        const known = await this.store.lookupProviderId(provider.name, providerId);
+        if (known) {
+            if (given?.status) await this.applyStatus(provider.name, providerId, given.status, null);
+            return known;
+        }
+        const id = await this.storeMessage(provider, given ?? await provider.getMessage(providerId));
         const message = await this.store.requireMessage(id);
         for (const meta of message.attachments) {
             await this.attachmentBody(message, meta).catch(err =>
@@ -216,33 +257,39 @@ export class Mail {
         return id;
     }
 
-    private storeInbound(providerId: string, inbound: Awaited<ReturnType<MailProvider["getInbound"]>>): Promise<string> {
+    private storeMessage(provider: MailProvider, given: ProviderMessage): Promise<string> {
         return this.write(async () => {
-            const existing = await this.store.lookupProviderId(this.provider.name, providerId);
+            const existing = await this.store.lookupProviderId(provider.name, given.providerId);
             if (existing) return existing;
 
-            const mailbox = this.mailboxFor([...inbound.deliveredTo, ...inbound.to, ...inbound.cc]);
-            const participants = participantsOf(inbound);
-            const threadId = await resolveThreadId(
-                this.store,
-                {
-                    mailbox,
-                    inReplyTo: inbound.inReplyTo,
-                    references: inbound.references,
-                    subject: inbound.subject,
-                    participants,
-                    at: inbound.receivedAt,
-                },
-                address => this.isOwn(address),
-                this.cfg.threadWindowDays,
-            );
+            const incoming = given.direction === "in";
+            const mailbox = this.mailboxFor(provider, incoming ? [...given.deliveredTo, ...given.to, ...given.cc] : [given.from]);
+            const line = provider.kind === "chat" ? this.cfg.mailboxes[mailbox]! : null;
+            const inbound: ProviderMessage = line
+                ? { ...given, ...(incoming ? { to: [bareAddress(line.address)] } : { from: formatAddress(line.name, line.address) }) }
+                : given;
+            const threadId = line
+                ? await chatThreadId(this.store, mailbox, bareAddress(incoming ? inbound.from : inbound.to[0]!))
+                : await resolveThreadId(
+                    this.store,
+                    {
+                        mailbox,
+                        inReplyTo: inbound.inReplyTo,
+                        references: inbound.references,
+                        subject: inbound.subject,
+                        participants: participantsOf(inbound),
+                        at: inbound.at,
+                    },
+                    address => this.isOwn(address),
+                    this.cfg.threadWindowDays,
+                );
             const message: Message = {
                 id: nid(),
-                provider: this.provider.name,
+                provider: provider.name,
                 provider_id: inbound.providerId,
                 mailbox,
-                direction: "in",
-                status: "received",
+                direction: inbound.direction,
+                status: incoming ? "received" : inbound.status ?? "sent",
                 message_id: inbound.messageId,
                 in_reply_to: inbound.inReplyTo,
                 references: inbound.references,
@@ -260,34 +307,34 @@ export class Mail {
                 labels: {},
                 note: null,
                 created_by: null,
-                read: false,
+                read: !incoming,
                 archived: false,
-                created_at: inbound.receivedAt,
-                sent_at: null,
+                created_at: inbound.at,
+                sent_at: incoming ? null : inbound.at,
                 version: 1,
                 edited_by_human: false,
                 pending: null,
             };
             await this.store.putMessage(message);
-            await this.store.indexProviderId(this.provider.name, inbound.providerId, message.id);
+            await this.store.indexProviderId(provider.name, inbound.providerId, message.id);
             if (message.message_id) await this.store.indexMessageId(message.message_id, message.id);
             await refreshThread(this.store, threadId, message.id);
             return message.id;
         });
     }
 
-    async applyEvent(event: ProviderEvent): Promise<void> {
-        if (event.type === "received") {
-            await this.ingest(event.providerId);
+    async applyEvent(provider: string, event: ProviderEvent): Promise<void> {
+        if (event.type === "message") {
+            await this.ingest(provider, event.providerId, event.message);
             return;
         }
-        await this.applyStatus(event.providerId, event.status, event.messageId);
+        await this.applyStatus(provider, event.providerId, event.status, event.messageId);
     }
 
     /** Status updates never move backwards: a late `sent` does not overwrite `delivered`. */
-    applyStatus(providerId: string, status: DeliveryStatus, messageId: string | null): Promise<void> {
+    applyStatus(provider: string, providerId: string, status: DeliveryStatus, messageId: string | null): Promise<void> {
         return this.write(async () => {
-            const id = await this.store.lookupProviderId(this.provider.name, providerId);
+            const id = await this.store.lookupProviderId(provider, providerId);
             if (!id) return;
             const message = await this.store.requireMessage(id);
             if (message.direction !== "out") return;
@@ -365,14 +412,14 @@ export class Mail {
     // Context
 
     async getContact(address: string, scope: Scope): Promise<Contact | null> {
-        const bare = bareAddress(address);
+        const bare = phoneAddress(address) ?? bareAddress(address);
         await this.requireContactAccess(bare, scope);
         return this.store.getContact(bare);
     }
 
     async setContact(address: string, patch: ContextPatch, actor: Actor): Promise<Contact> {
-        const bare = bareAddress(address);
-        if (!bare.includes("@")) throw new InvalidRequestError(`"${address}" is not an email address`);
+        const bare = phoneAddress(address) ?? bareAddress(address);
+        if (!bare.includes("@") && !bare.startsWith("+")) throw new InvalidRequestError(`"${address}" is not an email address or a phone number`);
         await this.requireContactAccess(bare, actor.scope);
         return this.write(async () => {
             const contact: Contact = { address: bare, ...this.merge(await this.store.getContact(bare), patch, actor) };
@@ -474,10 +521,10 @@ export class Mail {
         let sender: MailboxConfig;
         let to: string[];
         let cc = input.cc ?? [];
-        let subject: string;
+        let subject: string | undefined;
         let inReplyTo: string | null = null;
         let references: string[] = [];
-        let threadId: string;
+        let threadId: string | undefined;
 
         if (input.replyToId) {
             const original = await this.requireMessage(input.replyToId, actor.scope);
@@ -493,18 +540,28 @@ export class Mail {
         } else {
             if (!input.mailbox) throw new InvalidRequestError("mailbox is required when not replying");
             if (!input.to?.length) throw new InvalidRequestError("to is required when not replying");
-            if (input.subject === undefined) throw new InvalidRequestError("subject is required when not replying");
             mailbox = input.mailbox;
             sender = this.sendingMailbox(mailbox, null);
             to = input.to;
             subject = input.subject;
-            threadId = nid();
         }
         if (!reaches(actor.scope, mailbox)) throw new InvalidRequestError(`Mailbox "${mailbox}" is not available to ${actor.name}`);
+        this.assertCanWrite(mailbox, actor);
+
+        if (this.provider(sender.provider).kind === "chat") {
+            if (cc.length || input.bcc?.length || input.html !== undefined || input.subject) {
+                throw new InvalidRequestError(`Mailbox "${mailbox}" is a chat: a message is plain text to one phone number`);
+            }
+            to = chatRecipient(to);
+            subject = "";
+            threadId ??= await chatThreadId(this.store, mailbox, to[0]!);
+        }
+        if (subject === undefined) throw new InvalidRequestError("subject is required when not replying");
+        threadId ??= nid();
 
         const draft: Message = {
             id: nid(),
-            provider: this.provider.name,
+            provider: sender.provider,
             provider_id: null,
             mailbox,
             direction: "out",
@@ -541,9 +598,10 @@ export class Mail {
         return draft;
     }
 
-    private async requireDraft(id: string, scope: Scope): Promise<Message> {
-        const draft = await this.requireMessage(id, scope);
+    private async requireDraft(id: string, actor: Actor): Promise<Message> {
+        const draft = await this.requireMessage(id, actor.scope);
         if (draft.status !== "draft") throw new InvalidRequestError(`Message ${id} is not a pending draft (status: ${draft.status})`);
+        this.assertCanWrite(draft.mailbox, actor);
         return draft;
     }
 
@@ -553,7 +611,7 @@ export class Mail {
      */
     updateDraft(id: string, version: number, patch: DraftPatch, actor: Actor, force = false): Promise<Message> {
         return this.write(async () => {
-            const draft = await this.requireDraft(id, actor.scope);
+            const draft = await this.requireDraft(id, actor);
             if (draft.version !== version) throw new ConflictError(draft);
             if (draft.pending) throw new InvalidRequestError(`Draft ${id} is about to ${draft.pending.action}; undo it first`);
             if (actor.kind !== "ui" && draft.edited_by_human && !force) {
@@ -561,6 +619,12 @@ export class Mail {
             }
             const changed = Object.keys(patch).filter(k => patch[k as keyof DraftPatch] !== undefined);
             Object.assign(draft, Object.fromEntries(changed.map(k => [k, patch[k as keyof DraftPatch]])));
+            if (this.provider(draft.provider).kind === "chat") {
+                if (draft.cc.length || draft.bcc.length || draft.html || draft.subject) {
+                    throw new InvalidRequestError(`Draft ${id} is a chat message: plain text to one phone number`);
+                }
+                draft.to = chatRecipient(draft.to);
+            }
             if (actor.kind === "ui") {
                 draft.edited_by_human = true;
                 if (patch.text !== undefined && patch.html === undefined) draft.html = null;
@@ -578,7 +642,7 @@ export class Mail {
     }
 
     private async discardDraftUnlocked(id: string, actor: Actor): Promise<void> {
-        const draft = await this.requireDraft(id, actor.scope);
+        const draft = await this.requireDraft(id, actor);
         draft.status = "discarded";
         draft.pending = null;
         await this.store.putMessage(draft);
@@ -590,8 +654,11 @@ export class Mail {
     /** Attaching does not change `version`: it never conflicts with text edits in flight. */
     attach(id: string, file: { filename: string; contentType: string; body: Uint8Array }, actor: Actor): Promise<Message> {
         return this.write(async () => {
-            const draft = await this.requireDraft(id, actor.scope);
+            const draft = await this.requireDraft(id, actor);
             if (draft.pending) throw new InvalidRequestError(`Draft ${id} is about to ${draft.pending.action}; undo it first`);
+            if (draft.attachments.length && this.provider(draft.provider).kind === "chat") {
+                throw new InvalidRequestError(`Draft ${id} is a chat message: it carries one attachment`);
+            }
             const meta: AttachmentMeta = {
                 id: nid(),
                 filename: file.filename,
@@ -610,7 +677,7 @@ export class Mail {
 
     detach(id: string, attachmentId: string, actor: Actor): Promise<Message> {
         return this.write(async () => {
-            const draft = await this.requireDraft(id, actor.scope);
+            const draft = await this.requireDraft(id, actor);
             if (draft.pending) throw new InvalidRequestError(`Draft ${id} is about to ${draft.pending.action}; undo it first`);
             const index = draft.attachments.findIndex(a => a.id === attachmentId);
             if (index < 0) throw new NotFoundError(`Attachment ${attachmentId} not found in draft ${id}`);
@@ -626,7 +693,7 @@ export class Mail {
     /** Starts the undo window for a send or discard. Calling it again keeps the first one. */
     schedule(id: string, action: PendingAction["action"], actor: Actor): Promise<Message> {
         return this.write(async () => {
-            const draft = await this.requireDraft(id, actor.scope);
+            const draft = await this.requireDraft(id, actor);
             if (!draft.pending) {
                 draft.pending = { action, at: new Date(Date.now() + this.cfg.ui.undoSec * 1000).toISOString(), by: actor.name };
                 await this.store.putMessage(draft);
@@ -639,7 +706,7 @@ export class Mail {
 
     undo(id: string, actor: Actor): Promise<Message> {
         return this.write(async () => {
-            const draft = await this.requireDraft(id, actor.scope);
+            const draft = await this.requireDraft(id, actor);
             clearTimeout(this.timers.get(id));
             this.timers.delete(id);
             if (draft.pending) {
@@ -693,26 +760,32 @@ export class Mail {
     }
 
     /**
-     * The draft id is the idempotency key and the Message-ID is stored before the provider call,
-     * so retrying a failed send repeats the same request instead of sending twice.
+     * The draft id is the idempotency key and a mail's Message-ID is stored before the provider call,
+     * so retrying a failed send repeats the same request instead of sending twice. A chat message
+     * goes out as written: no headers, HTML or signature.
      */
     private async sendDraftUnlocked(id: string, actor: Actor): Promise<Message> {
-        const draft = await this.requireDraft(id, actor.scope);
+        const draft = await this.requireDraft(id, actor);
+        const provider = this.provider(draft.provider);
+        const chat = provider.kind === "chat";
         const sender = this.sendingMailbox(draft.mailbox, draft.from);
-        if (!draft.message_id) {
-            draft.message_id = `<${randomUUID()}@${domainOf(sender.address)}>`;
-            await this.store.putMessage(draft);
+        const headers: Record<string, string> = {};
+        if (!chat) {
+            if (!draft.message_id) {
+                draft.message_id = `<${randomUUID()}@${domainOf(sender.address)}>`;
+                await this.store.putMessage(draft);
+            }
+            headers["Message-ID"] = draft.message_id;
+            if (draft.in_reply_to) headers["In-Reply-To"] = draft.in_reply_to;
+            if (draft.references.length) headers["References"] = draft.references.join(" ");
         }
-        const headers: Record<string, string> = { "Message-ID": draft.message_id };
-        if (draft.in_reply_to) headers["In-Reply-To"] = draft.in_reply_to;
-        if (draft.references.length) headers["References"] = draft.references.join(" ");
 
         const attachments = await Promise.all(draft.attachments.map(async a => ({
             filename: a.filename,
             contentType: a.content_type,
             content: await this.attachmentBody(draft, a),
         })));
-        const { providerId } = await this.provider.send(
+        const { providerId } = await provider.send(
             {
                 from: draft.from,
                 to: draft.to,
@@ -720,8 +793,8 @@ export class Mail {
                 bcc: draft.bcc,
                 replyTo: draft.reply_to,
                 subject: draft.subject,
-                text: sender.signatureText ? `${draft.text}\n\n${sender.signatureText}` : draft.text,
-                html: (draft.html ?? textToHtml(draft.text)) + (sender.signatureHtml ? `\n${sender.signatureHtml}` : ""),
+                text: !chat && sender.signatureText ? `${draft.text}\n\n${sender.signatureText}` : draft.text,
+                html: chat ? null : (draft.html ?? textToHtml(draft.text)) + (sender.signatureHtml ? `\n${sender.signatureHtml}` : ""),
                 headers,
                 attachments,
             },
@@ -734,8 +807,8 @@ export class Mail {
         draft.sent_at = new Date().toISOString();
         draft.headers = headers;
         await this.store.putMessage(draft);
-        await this.store.indexProviderId(this.provider.name, providerId, draft.id);
-        await this.store.indexMessageId(draft.message_id, draft.id);
+        await this.store.indexProviderId(provider.name, providerId, draft.id);
+        if (draft.message_id) await this.store.indexMessageId(draft.message_id, draft.id);
         await this.store.setDraft(draft.id, false);
         await refreshThread(this.store, draft.thread_id);
         await this.store.audit("send", actor, draft.id, { provider_id: providerId });
@@ -754,7 +827,7 @@ export class Mail {
         return this.send({ replyToId: messageId, replyAll, text }, actor);
     }
 
-    /** An inbound attachment's metadata and bytes, from disk or, the first time, from the provider. */
+    /** An attachment's metadata and bytes, from disk or, the first time for a message the provider holds, from the provider. */
     async getAttachment(messageId: string, attachmentId: string, scope: Scope): Promise<{ meta: AttachmentMeta; body: Uint8Array }> {
         const message = await this.requireMessage(messageId, scope);
         const meta = message.attachments.find(a => a.id === attachmentId);
@@ -765,8 +838,8 @@ export class Mail {
     private async attachmentBody(message: Message, meta: AttachmentMeta): Promise<Uint8Array> {
         const stored = await this.files.read(message.id, meta.id);
         if (stored) return stored;
-        if (!message.provider_id || message.direction !== "in") throw new NotFoundError(`Attachment ${meta.id} not found`);
-        const body = await this.provider.getAttachment(message.provider_id, meta.id);
+        if (!message.provider_id || message.created_by) throw new NotFoundError(`Attachment ${meta.id} not found`);
+        const body = await this.provider(message.provider).getAttachment(message.provider_id, meta.id);
         await this.files.write(message.id, meta.id, body);
         return body;
     }
