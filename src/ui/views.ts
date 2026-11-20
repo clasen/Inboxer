@@ -257,23 +257,41 @@ function withoutImagePlaceholders(m: MessageView): string {
 
 const unopened = (url: string, open: string, close: string) => url.endsWith(close) && url.split(close).length > url.split(open).length;
 
+const LINKABLE = /https?:\/\/[^\s<>"]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
+const CLOSERS: Record<string, string> = { "(": ")", "[": "]", "<": ">" };
+const IMAGE_PATH = /\.(?:png|jpe?g|gif|webp|svg)$/i;
+/** Text right before an opening bracket, on its line or the one above: the label of what the bracket holds. */
+const LABEL = /\S[^\S\n]*\n?[^\S\n]*$/;
+
 /**
- * Plain text with its web addresses turned into links; the punctuation that closes a sentence stays outside them.
- * Mail written from HTML repeats a link's address after its label, as "label [address]": when the label is
- * the address itself, it shows once.
+ * Plain text with its web and mail addresses turned into links; a mail address opens New mail.
+ * Mail written from HTML puts a link's address in brackets after its label, so the text reads past it:
+ * a labelled address shows as its host, an image's address is left out, and an address that repeats shows once.
  */
 function linked(text: string): View {
     const parts: View[] = [];
     let last = 0;
-    for (const match of text.matchAll(/https?:\/\/[^\s<>"]+/g)) {
+    for (const match of text.matchAll(LINKABLE)) {
         if (match.index < last) continue;
-        let url = match[0];
-        while (/[.,;:!?'*]$/.test(url) || unopened(url, "(", ")") || unopened(url, "[", "]")) url = url.slice(0, -1);
-        parts.push(h`${text.slice(last, match.index)}<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`);
-        last = match.index + url.length;
-        const rest = text.slice(last);
-        const repeat = [`[${url}]`, `<${url}>`].find(r => rest.trimStart().startsWith(r));
-        if (repeat) last += rest.indexOf(repeat) + repeat.length;
+        let address = match[0];
+        const web = address.includes("://");
+        while (web && (/[.,;:!?'*]$/.test(address) || unopened(address, "(", ")") || unopened(address, "[", "]"))) address = address.slice(0, -1);
+        const end = match.index + address.length;
+        const opener = text[match.index - 1] ?? "";
+        const enclosed = text[end] === CLOSERS[opener];
+        if (web && enclosed && opener === "[" && IMAGE_PATH.test(address.split(/[?#]/)[0]!)) {
+            parts.push(h`${text.slice(last, match.index - 1).trimEnd()}`);
+            last = end + 1;
+            continue;
+        }
+        const labelled = enclosed && LABEL.test(text.slice(0, match.index - 1));
+        const link = web
+            ? h`<a href="${address}" target="_blank" rel="noopener noreferrer">${labelled ? address.split("/")[2] : address}</a>`
+            : h`<a href="mailto:${address}" data-compose="${address}">${address}</a>`;
+        parts.push(h`${text.slice(last, match.index)}${link}`);
+        const rest = text.slice(end);
+        const repeat = [`(${address})`, `[${address}]`, `<${address}>`].find(r => rest.trimStart().startsWith(r));
+        last = end + (repeat ? rest.indexOf(repeat) + repeat.length : 0);
     }
     parts.push(h`${text.slice(last)}`);
     return join(parts);

@@ -1,11 +1,16 @@
-// New mail opens as a modal sheet; a [data-close] button closes it, and so does a click outside it (closedby="any").
+// New mail opens as a modal sheet, addressed when a mail address in a message opened it; a [data-close] button closes it, and so does a click outside it (closedby="any").
 document.addEventListener("click", event => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
-    if (target.closest("[data-compose]")) {
-        const dialog = document.getElementById("compose");
+    const compose = target.closest("[data-compose]");
+    const dialog = document.getElementById("compose");
+    // A mail address in a message carries itself in data-compose; without a mailbox to write from, its mailto: link stands.
+    if (compose && dialog) {
+        event.preventDefault();
         dialog.showModal();
-        dialog.querySelector("#compose-to").focus();
+        const to = dialog.querySelector("#compose-to");
+        if (compose.dataset.compose) to.value = compose.dataset.compose;
+        (compose.dataset.compose ? dialog.querySelector("#compose-subject") : to).focus();
     } else if (target.closest("[data-close]")) {
         target.closest("dialog").close();
     } else if (target.closest("[data-context-toggle]")) {

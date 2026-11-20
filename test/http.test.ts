@@ -480,9 +480,9 @@ describe("http", () => {
         assert.ok(body.includes("Hello there"));
     });
 
-    test("web addresses in a message are links, without the punctuation around them", async () => {
+    test("addresses in a message are links, and the ones in brackets after a label stay out of the way", async () => {
         const cookie = await signIn(h);
-        h.provider.addInbound({ providerId: "x", text: 'See https://example.com/a?b=1&c=2. Also (https://example.com/wiki/Mail_(disambiguation)) and <https://example.com/x>"onmouseover="y\nhttps://example.com/v?t=1\n[https://example.com/v?t=1]\nSite [https://example.com/s]' });
+        h.provider.addInbound({ providerId: "x", text: 'See https://example.com/a?b=1&c=2. Also (https://example.com/wiki/Mail_(disambiguation)) and <https://example.com/x>"onmouseover="y\nhttps://example.com/v?t=1\n[https://example.com/v?t=1]\nSite [https://example.com/s]\n(pic [https://example.com/i.png?v=2])\nWrite to hi@there.test (hi@there.test).' });
         await webhook(h, [{ type: "message", providerId: "x" }]);
         const client = await mcpClient(h);
         const [thread] = (await call(client, "list_threads")).data;
@@ -496,7 +496,8 @@ describe("http", () => {
             "https://example.com/v?t=1",
             "https://example.com/s",
         ]);
-        assert.ok(body.includes("</a>\nSite ["));
+        assert.ok(body.includes('</a>\nSite [<a href="https://example.com/s" target="_blank" rel="noopener noreferrer">example.com</a>]\n(pic)\n'));
+        assert.ok(body.includes('Write to <a href="mailto:hi@there.test" data-compose="hi@there.test">hi@there.test</a>.'));
         assert.ok(!body.includes('"onmouseover="'));
     });
 
