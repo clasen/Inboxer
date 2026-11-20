@@ -480,6 +480,23 @@ describe("http", () => {
         assert.ok(body.includes("Hello there"));
     });
 
+    test("web addresses in a message are links, without the punctuation around them", async () => {
+        const cookie = await signIn(h);
+        h.provider.addInbound({ providerId: "x", text: 'See https://example.com/a?b=1&c=2. Also (https://example.com/wiki/Mail_(disambiguation)) and <https://example.com/x>"onmouseover="y' });
+        await webhook(h, [{ type: "message", providerId: "x" }]);
+        const client = await mcpClient(h);
+        const [thread] = (await call(client, "list_threads")).data;
+        await client.close();
+        const body = await (await req(h, `/threads/${thread.id}`, { cookie })).text();
+        const hrefs = [...body.matchAll(/<pre class="body">[^]*?<\/pre>/g)].flatMap(pre => [...pre[0].matchAll(/<a href="([^"]*)" target="_blank" rel="noopener noreferrer">/g)].map(a => a[1]));
+        assert.deepEqual(hrefs, [
+            "https://example.com/a?b=1&amp;c=2",
+            "https://example.com/wiki/Mail_(disambiguation)",
+            "https://example.com/x",
+        ]);
+        assert.ok(!body.includes('"onmouseover="'));
+    });
+
     test("events: a signed-in page hears every change to the mail, a signed-out one gets 401", async () => {
         assert.equal((await req(h, "/events")).status, 401);
         const cookie = await signIn(h);

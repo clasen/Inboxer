@@ -255,6 +255,20 @@ function withoutImagePlaceholders(m: MessageView): string {
     return text.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+/** Plain text with its web addresses turned into links; the punctuation that closes a sentence stays outside them. */
+function linked(text: string): View {
+    const parts: View[] = [];
+    let last = 0;
+    for (const match of text.matchAll(/https?:\/\/[^\s<>"]+/g)) {
+        let url = match[0];
+        while (/[.,;:!?'*]$/.test(url) || (url.endsWith(")") && url.split(")").length > url.split("(").length)) url = url.slice(0, -1);
+        parts.push(h`${text.slice(last, match.index)}<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`);
+        last = match.index + url.length;
+    }
+    parts.push(h`${text.slice(last)}`);
+    return join(parts);
+}
+
 function recipients(m: MessageView): View | "" {
     if (!m.to.length && !m.cc.length) return "";
     return h`<div class="meta">${when(m.to.length, () => h`<span>${S.to}: ${m.to.join(", ")}</span>`)}${when(m.cc.length, () => h`<span>${S.cc}: ${m.cc.join(", ")}</span>`)}</div>`;
@@ -267,7 +281,7 @@ export function messageBubble(m: MessageView, showSender: boolean): View {
     return h`<article class="msg ${mine ? "mine" : "theirs"}" id="m-${m.id}">
   ${when(showSender && !mine, () => h`<div class="msg-from">${displayName(m.from)}</div>`)}
   ${extra ? recipients(m) : ""}
-  <pre class="body">${withoutImagePlaceholders(m)}</pre>
+  <pre class="body">${linked(withoutImagePlaceholders(m))}</pre>
   ${attachments(m)}
   <span class="msg-time">${formatTime(m.date)}${mine ? ` · ${m.status}` : ""}</span>
 </article>`;
@@ -319,7 +333,7 @@ export function draftCard(d: Message, canAct: boolean): View {
     ${when(d.subject, () => h`<div class="subject">${d.subject}</div>`)}
   </div>
   ${when(d.note, () => h`<div class="note">${d.note}</div>`)}
-  <pre class="body">${d.text}</pre>
+  <pre class="body">${linked(d.text)}</pre>
   ${attachments(d)}
   ${when(canAct, () => h`<div class="actions">
     <button class="danger" hx-post="/drafts/${d.id}/discard" hx-target="#draft-${d.id}" hx-swap="outerHTML">${S.discard}</button>
@@ -351,7 +365,7 @@ export function draftEditor(d: Message, form: DraftForm, conflict: Message | nul
       <summary>${S.currentVersion}</summary>
       <div class="meta"><span>${S.to}: ${conflict!.to.join(", ")}</span>${when(conflict!.cc.length, () => h`<span>${S.cc}: ${conflict!.cc.join(", ")}</span>`)}</div>
       <div class="subject">${conflict!.subject}</div>
-      <pre class="body">${conflict!.text}</pre>
+      <pre class="body">${linked(conflict!.text)}</pre>
     </details>
   </div>`)}
   <input type="hidden" name="version" value="${version}">
