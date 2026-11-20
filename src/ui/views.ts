@@ -255,15 +255,25 @@ function withoutImagePlaceholders(m: MessageView): string {
     return text.replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/** Plain text with its web addresses turned into links; the punctuation that closes a sentence stays outside them. */
+const unopened = (url: string, open: string, close: string) => url.endsWith(close) && url.split(close).length > url.split(open).length;
+
+/**
+ * Plain text with its web addresses turned into links; the punctuation that closes a sentence stays outside them.
+ * Mail written from HTML repeats a link's address after its label, as "label [address]": when the label is
+ * the address itself, it shows once.
+ */
 function linked(text: string): View {
     const parts: View[] = [];
     let last = 0;
     for (const match of text.matchAll(/https?:\/\/[^\s<>"]+/g)) {
+        if (match.index < last) continue;
         let url = match[0];
-        while (/[.,;:!?'*]$/.test(url) || (url.endsWith(")") && url.split(")").length > url.split("(").length)) url = url.slice(0, -1);
+        while (/[.,;:!?'*]$/.test(url) || unopened(url, "(", ")") || unopened(url, "[", "]")) url = url.slice(0, -1);
         parts.push(h`${text.slice(last, match.index)}<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`);
         last = match.index + url.length;
+        const rest = text.slice(last);
+        const repeat = [`[${url}]`, `<${url}>`].find(r => rest.trimStart().startsWith(r));
+        if (repeat) last += rest.indexOf(repeat) + repeat.length;
     }
     parts.push(h`${text.slice(last)}`);
     return join(parts);
