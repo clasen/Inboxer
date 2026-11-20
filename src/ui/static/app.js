@@ -1,4 +1,4 @@
-// New mail opens as a modal sheet; a click on its backdrop or a [data-close] button closes it.
+// New mail opens as a modal sheet; a [data-close] button closes it, and so does a click outside it (closedby="any").
 document.addEventListener("click", event => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
@@ -8,12 +8,28 @@ document.addEventListener("click", event => {
         dialog.querySelector("#compose-to").focus();
     } else if (target.closest("[data-close]")) {
         target.closest("dialog").close();
-    } else if (target instanceof HTMLDialogElement && target.open) {
-        target.close();
     } else if (target.closest("[data-context-toggle]")) {
         document.body.classList.toggle("context-open");
     }
 });
+
+// Where closedby is missing, a press and a release that are both outside the sheet close it,
+// so a text selection dragged onto the backdrop does not.
+if (!("closedBy" in HTMLDialogElement.prototype)) {
+    const outside = (event, dialog) => {
+        const box = dialog.getBoundingClientRect();
+        return event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
+    };
+    let pressed = null;
+    document.addEventListener("pointerdown", event => {
+        const dialog = event.target instanceof Element ? event.target.closest('dialog[closedby="any"]') : null;
+        pressed = dialog && outside(event, dialog) ? dialog : null;
+    });
+    document.addEventListener("pointerup", event => {
+        if (pressed?.open && outside(event, pressed)) pressed.close();
+        pressed = null;
+    });
+}
 
 // A draft's editor opens in the edit sheet; one draft is edited at a time.
 document.addEventListener("htmx:afterSwap", event => {

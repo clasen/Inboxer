@@ -29,6 +29,7 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 body { margin: 0; background: var(--bg); color: var(--fg); }
 a { color: inherit; text-decoration: none; }
 h1 { font-size: 2rem; line-height: 1.1; letter-spacing: -0.04em; font-weight: 700; margin: 0 0 24px; }
@@ -155,6 +156,9 @@ body.full .tabbar { display: none; }
     display: inline-flex; align-items: center; justify-content: center; background: none; color: var(--fg);
 }
 .icon-btn:hover { background: var(--soft); border: none; }
+/* A file picker's label carries the focus ring of the input hidden inside it. */
+label.icon-btn { position: relative; }
+label.icon-btn:has(:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
 .thread-head form { margin: 0; }
 .thread-title {
     flex: 1; min-width: 0; height: auto; padding: 4px 6px; border: none; border-radius: 12px;
@@ -219,7 +223,7 @@ body.context-open .context-panel { display: flex; flex-direction: column; }
     body.context-open .context-panel {
         position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; height: 70dvh;
         border-radius: 22px 22px 0 0; box-shadow: 0 -8px 30px rgb(0 0 0 / .25);
-        padding-bottom: env(safe-area-inset-bottom); animation: rise .2s ease-out;
+        padding-bottom: env(safe-area-inset-bottom);
     }
     .context-panel::before {
         content: ""; position: absolute; top: 8px; left: 50%; width: 40px; height: 5px; margin-left: -20px;
@@ -236,6 +240,9 @@ body.context-open .context-panel { display: flex; flex-direction: column; }
     body.context-open .thread { grid-template-columns: minmax(0, 1fr) 360px; }
     body.context-open .context-panel { grid-column: 2; grid-row: 1 / -1; border-left: 1px solid var(--line); min-height: 0; }
     .composer { padding: 0 24px 20px; background: none; border: none; }
+}
+@media (max-width: 899px) and (prefers-reduced-motion: no-preference) {
+    body.context-open .context-panel, dialog.sheet[open] { animation: rise .2s ease-out; }
 }
 @keyframes rise { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
@@ -254,8 +261,9 @@ dialog.sheet {
     border: none; border-radius: 22px 22px 0 0; background: var(--bg); color: var(--fg);
     box-shadow: 0 -8px 30px rgb(0 0 0 / .25);
 }
-dialog.sheet[open] { animation: rise .2s ease-out; }
-dialog.sheet::backdrop { background: var(--backdrop); }
+/* Scrolling inside the sheet or over its backdrop stays off the page behind. */
+dialog.sheet:modal { overscroll-behavior: contain; }
+dialog.sheet::backdrop { background: var(--backdrop); overflow: hidden; overscroll-behavior: contain; }
 dialog.sheet form { position: relative; height: 100%; display: flex; flex-direction: column; }
 .grabber { width: 40px; height: 5px; border-radius: 999px; background: var(--line); margin: 8px auto 9px; flex: none; }
 .sheet-close { position: absolute; top: 8px; right: 8px; color: var(--muted); z-index: 1; }
@@ -263,6 +271,7 @@ dialog.sheet .field { padding: 0 16px; }
 dialog.sheet .field.compact { padding-right: 60px; margin-top: 12px; }
 dialog.sheet .field output { font-family: var(--mono); font-size: .8rem; padding: 10px 0; }
 dialog.sheet textarea { flex: 1; min-height: 0; margin: 0; padding: 12px 16px; resize: none; }
+dialog.sheet textarea:focus + .sheet-actions { border-top-color: var(--focus); }
 .sheet-actions {
     display: flex; gap: 8px;
     padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line);
@@ -275,7 +284,6 @@ dialog.sheet .note { margin: 0 16px 8px; flex: none; }
 .sheet-files { flex: 1; min-width: 0; align-self: center; font-family: var(--mono); font-size: .75rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (min-width: 900px) {
     dialog.sheet { margin: auto; width: 640px; height: min(640px, 80dvh); border-radius: 18px; }
-    dialog.sheet[open] { animation: none; }
     .grabber { visibility: hidden; }
 }
 

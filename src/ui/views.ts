@@ -143,7 +143,7 @@ ${when(opts.signedIn, () => h`<nav class="tabbar" id="tabbar" data-live aria-lab
   ${link("settings", "/settings", S.navSettings, "settings")}
 </nav>`)}
 ${when(opts.signedIn && canSend, () => composeDialog(opts.senders!))}
-${when(opts.signedIn, () => h`<dialog class="sheet" id="edit-sheet" aria-label="${S.edit}"></dialog>`)}
+${when(opts.signedIn, () => h`<dialog class="sheet" id="edit-sheet" closedby="any" aria-label="${S.edit}"></dialog>`)}
 </body>
 </html>`;
 }
@@ -153,7 +153,7 @@ function composeDialog(senders: Mailbox[]): View {
     const from = senders.length > 1
         ? h`<span class="select"><select id="compose-from" name="mailbox">${join(senders.map(m => h`<option value="${m.id}">${m.address}</option>`))}</select></span>`
         : h`<input type="hidden" name="mailbox" value="${senders[0]!.id}"><output id="compose-from">${senders[0]!.address}</output>`;
-    return h`<dialog class="sheet" id="compose" aria-label="${S.newMail}">${mailForm("compose", "/compose", {
+    return h`<dialog class="sheet" id="compose" closedby="any" aria-label="${S.newMail}">${mailForm("compose", "/compose", {
         head: h`<div class="field compact"><label for="compose-from">${S.from}</label>${from}</div>`, headIsRow: true, to: "", cc: "", subject: "", text: "",
     })}</dialog>`;
 }
@@ -187,7 +187,7 @@ function mailForm(id: string, action: string, f: { head: View; headIsRow?: boole
     </div>
     <textarea name="text" aria-label="${S.body}" required>${f.text}</textarea>
     <div class="sheet-actions">
-      <label class="icon-btn" aria-label="${S.attach}">${icon("attach")}<input type="file" name="files" multiple hidden data-file-names></label>
+      <label class="icon-btn">${icon("attach")}<input type="file" name="files" multiple class="visually-hidden" aria-label="${S.attach}" data-file-names></label>
       <output class="sheet-files"></output>
       <button type="submit" name="action" value="save">${S.saveDraft}</button>
       <button type="submit" name="action" value="send" class="primary">${S.send}${icon("send")}</button>
@@ -394,7 +394,7 @@ export function draftEditor(d: Message, form: DraftForm, conflict: Message | nul
 /** The editor's attachment list with remove buttons, and the picker that drag and drop also feeds. */
 export function draftFiles(d: Message, error: string | null): View {
     return h`<div class="draft-files" id="files-${d.id}">
-  <label class="icon-btn" aria-label="${S.attach}">${icon("attach")}<input type="file" name="files" multiple hidden hx-post="/drafts/${d.id}/attachments" hx-encoding="multipart/form-data" hx-trigger="change" hx-target="#files-${d.id}" hx-swap="outerHTML" hx-include="this"></label>
+  <label class="icon-btn">${icon("attach")}<input type="file" name="files" multiple class="visually-hidden" aria-label="${S.attach}" hx-post="/drafts/${d.id}/attachments" hx-encoding="multipart/form-data" hx-trigger="change" hx-target="#files-${d.id}" hx-swap="outerHTML" hx-include="this"></label>
   ${join(d.attachments.map(a => h`<span class="file"><span>${a.filename}</span><span class="size">${formatSize(a.size)}</span><button type="button" class="link" aria-label="${S.remove} ${a.filename}" hx-post="/drafts/${d.id}/attachments/${a.id}/remove" hx-target="#files-${d.id}" hx-swap="outerHTML">×</button></span>`))}
   ${when(error, () => h`<p class="warn">${error}</p>`)}
 </div>`;
