@@ -501,6 +501,17 @@ describe("http", () => {
         assert.ok(!body.includes('"onmouseover="'));
     });
 
+    test("a web address escaped by the sender's template links to the address it stands for", async () => {
+        const cookie = await signIn(h);
+        h.provider.addInbound({ providerId: "x", text: "Verify: https://example.com/verify?token&#x3D;abc&amp;pad&#61;&#x3D;\nThen 1 &lt; 2. https://example.com/?a&#x99999999;" });
+        await webhook(h, [{ type: "message", providerId: "x" }]);
+        const client = await mcpClient(h);
+        const [thread] = (await call(client, "list_threads")).data;
+        await client.close();
+        const body = await (await req(h, `/threads/${thread.id}`, { cookie })).text();
+        assert.ok(body.includes('<a href="https://example.com/verify?token=abc&amp;pad==" target="_blank" rel="noopener noreferrer">https://example.com/verify?token=abc&amp;pad==</a>\nThen 1 &amp;lt; 2. <a href="https://example.com/?a&amp;#x99999999;"'));
+    });
+
     test("events: a signed-in page hears every change to the mail, a signed-out one gets 401", async () => {
         assert.equal((await req(h, "/events")).status, 401);
         const cookie = await signIn(h);

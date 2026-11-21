@@ -3,6 +3,7 @@ import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import { bareAddress } from "../core/address.ts";
 import type { MessageView } from "../core/mail.ts";
+import { decodeEntities } from "../core/text.ts";
 import { type Contact, type Context, type Message, type Session, type Thread } from "../types.ts";
 import { ASSETS } from "./assets.ts";
 import { S } from "./strings.ts";
@@ -259,6 +260,7 @@ const unopened = (url: string, open: string, close: string) => url.endsWith(clos
 
 const LINKABLE = /https?:\/\/[^\s<>"]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
 const CLOSERS: Record<string, string> = { "(": ")", "[": "]", "<": ">" };
+const ENDS_IN_ENTITY = /&(?:#x[0-9a-f]+|#\d+|[a-z]+);$/i;
 const IMAGE_PATH = /\.(?:png|jpe?g|gif|webp|svg)$/i;
 /** Text right before an opening bracket, on its line or the one above: the label of what the bracket holds. */
 const LABEL = /\S[^\S\n]*\n?[^\S\n]*$/;
@@ -267,6 +269,7 @@ const LABEL = /\S[^\S\n]*\n?[^\S\n]*$/;
  * Plain text with its web and mail addresses turned into links; a mail address opens New mail.
  * Mail written from HTML puts a link's address in brackets after its label, so the text reads past it:
  * a labelled address shows as its host, an image's address is left out, and an address that repeats shows once.
+ * A web address carrying HTML entities was escaped by the sender's template, so the link gets the address they stand for.
  */
 function linked(text: string): View {
     const parts: View[] = [];
@@ -275,7 +278,7 @@ function linked(text: string): View {
         if (match.index < last) continue;
         let address = match[0];
         const web = address.includes("://");
-        while (web && (/[.,;:!?'*]$/.test(address) || unopened(address, "(", ")") || unopened(address, "[", "]"))) address = address.slice(0, -1);
+        while (web && ((/[.,;:!?'*]$/.test(address) && !ENDS_IN_ENTITY.test(address)) || unopened(address, "(", ")") || unopened(address, "[", "]"))) address = address.slice(0, -1);
         const end = match.index + address.length;
         const opener = text[match.index - 1] ?? "";
         const enclosed = text[end] === CLOSERS[opener];
@@ -285,8 +288,9 @@ function linked(text: string): View {
             continue;
         }
         const labelled = enclosed && LABEL.test(text.slice(0, match.index - 1));
+        const url = web ? decodeEntities(address) : address;
         const link = web
-            ? h`<a href="${address}" target="_blank" rel="noopener noreferrer">${labelled ? address.split("/")[2] : address}</a>`
+            ? h`<a href="${url}" target="_blank" rel="noopener noreferrer">${labelled ? url.split("/")[2] : url}</a>`
             : h`<a href="mailto:${address}" data-compose="${address}">${address}</a>`;
         parts.push(h`${text.slice(last, match.index)}${link}`);
         const rest = text.slice(end);

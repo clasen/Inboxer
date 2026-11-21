@@ -1,4 +1,17 @@
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+const ENTITY = /&(#x[0-9a-f]+|#\d+|[a-z]+);/gi;
+
+function decodeEntity(match: string, code: string): string {
+    if (code[0] === "#") {
+        const n = code[1]?.toLowerCase() === "x" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+        return n <= 0x10ffff ? String.fromCodePoint(n) : match;
+    }
+    return ENTITIES[code.toLowerCase()] ?? match;
+}
+
+export function decodeEntities(value: string): string {
+    return value.replace(ENTITY, decodeEntity);
+}
 
 /** Readable plain text from an HTML body. Never used for rendering. */
 export function htmlToText(html: string): string {
@@ -8,13 +21,7 @@ export function htmlToText(html: string): string {
         .replace(/<\/(p|div|tr|li|h[1-6]|blockquote)>/gi, "\n")
         .replace(/<li[^>]*>/gi, "- ")
         .replace(/<[^>]+>/g, "")
-        .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, code: string) => {
-            if (code[0] === "#") {
-                const n = code[1]?.toLowerCase() === "x" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
-                return Number.isFinite(n) ? String.fromCodePoint(n) : match;
-            }
-            return ENTITIES[code.toLowerCase()] ?? match;
-        })
+        .replace(ENTITY, decodeEntity)
         .replace(/[ \t]+\n/g, "\n")
         .replace(/\n{3,}/g, "\n\n")
         .trim();
