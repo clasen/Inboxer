@@ -264,14 +264,22 @@ const ENDS_IN_ENTITY = /&(?:#x[0-9a-f]+|#\d+|[a-z]+);$/i;
 const IMAGE_PATH = /\.(?:png|jpe?g|gif|webp|svg)$/i;
 /** Text right before an opening bracket, on its line or the one above: the label of what the bracket holds. */
 const LABEL = /\S[^\S\n]*\n?[^\S\n]*$/;
+/** An opening bracket before an address and the closing one after it, with the padding some senders put inside. */
+const OPENER = /([(\[<])[^\S\n]*\n?[^\S\n]*$/;
+const CLOSER = /^[^\S\n]*\n?[^\S\n]*([)\]>])/;
+
+/** A link's label when its address follows a colon on the same line: the clause that ends at that colon. */
+const NAMED = /((?:^|[.!?|]\s+)[^\p{L}\p{N}]*)([\p{L}\p{N}](?:(?![.!?|]\s).)*?)\s*:\s*$/u;
 
 /**
  * Plain text with its web and mail addresses turned into links; a mail address opens New mail.
  * Mail written from HTML puts a link's address in brackets after its label, so the text reads past it:
  * a labelled address shows as its host, an image's address is left out, and an address that repeats shows once.
  * A web address carrying HTML entities was escaped by the sender's template, so the link gets the address they stand for.
+ * `compact` is for mail already sent or received: "label: address" shows as the label alone, and any other
+ * web address as its host and path. A draft keeps its addresses whole, since the reviewer approves them.
  */
-function linked(text: string): View {
+function linked(text: string, compact = false): View {
     const parts: View[] = [];
     let last = 0;
     for (const match of text.matchAll(LINKABLE)) {
@@ -280,22 +288,30 @@ function linked(text: string): View {
         const web = address.includes("://");
         while (web && ((/[.,;:!?'*]$/.test(address) && !ENDS_IN_ENTITY.test(address)) || unopened(address, "(", ")") || unopened(address, "[", "]"))) address = address.slice(0, -1);
         const end = match.index + address.length;
-        const opener = text[match.index - 1] ?? "";
-        const enclosed = text[end] === CLOSERS[opener];
-        if (web && enclosed && opener === "[" && IMAGE_PATH.test(address.split(/[?#]/)[0]!)) {
-            parts.push(h`${text.slice(last, match.index - 1).trimEnd()}`);
-            last = end + 1;
+        const opening = OPENER.exec(text.slice(last, match.index));
+        const closing = CLOSER.exec(text.slice(end));
+        const enclosed = !!opening && !!closing && closing[1] === CLOSERS[opening[1]!];
+        const bracket = enclosed ? last + opening.index : match.index;
+        const close = enclosed ? end + closing[0].length - 1 : end;
+        if (web && enclosed && opening[1] === "[" && IMAGE_PATH.test(address.split(/[?#]/)[0]!)) {
+            parts.push(h`${text.slice(last, bracket).trimEnd()}`);
+            last = close + 1;
             continue;
         }
-        const labelled = enclosed && LABEL.test(text.slice(0, match.index - 1));
+        const labelled = enclosed && LABEL.test(text.slice(0, bracket));
         const url = web ? decodeEntities(address) : address;
-        const link = web
-            ? h`<a href="${url}" target="_blank" rel="noopener noreferrer">${labelled ? url.split("/")[2] : url}</a>`
-            : h`<a href="mailto:${address}" data-compose="${address}">${address}</a>`;
-        parts.push(h`${text.slice(last, match.index)}${link}`);
-        const rest = text.slice(end);
+        const before = text.slice(last, enclosed ? bracket + 1 : match.index);
+        const lineStart = before.lastIndexOf("\n") + 1;
+        const named = compact && web && !enclosed ? NAMED.exec(before.slice(lineStart)) : null;
+        const open = h`<a href="${url}" target="_blank" rel="noopener noreferrer"`;
+        if (named) parts.push(h`${before.slice(0, lineStart + named.index + named[1]!.length)}${open}>${named[2]}</a>`);
+        else if (!web) parts.push(h`${before}<a href="mailto:${address}" data-compose="${address}">${address}</a>`);
+        else if (labelled) parts.push(h`${before}${open}>${url.split("/")[2]}</a>`);
+        else if (compact) parts.push(h`${before}${open} class="address">${url.replace(/^https?:\/\//, "").split(/[?#]/)[0]!.replace(/\/$/, "")}</a>`);
+        else parts.push(h`${before}${open}>${url}</a>`);
+        const rest = text.slice(close);
         const repeat = [`(${address})`, `[${address}]`, `<${address}>`].find(r => rest.trimStart().startsWith(r));
-        last = end + (repeat ? rest.indexOf(repeat) + repeat.length : 0);
+        last = close + (repeat ? rest.indexOf(repeat) + repeat.length : 0);
     }
     parts.push(h`${text.slice(last)}`);
     return join(parts);
@@ -313,7 +329,7 @@ export function messageBubble(m: MessageView, showSender: boolean): View {
     return h`<article class="msg ${mine ? "mine" : "theirs"}" id="m-${m.id}">
   ${when(showSender && !mine, () => h`<div class="msg-from">${displayName(m.from)}</div>`)}
   ${extra ? recipients(m) : ""}
-  <pre class="body">${linked(withoutImagePlaceholders(m))}</pre>
+  <pre class="body">${linked(withoutImagePlaceholders(m), true)}</pre>
   ${attachments(m)}
   <span class="msg-time">${formatTime(m.date)}${mine ? ` · ${m.status}` : ""}</span>
 </article>`;
