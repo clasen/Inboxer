@@ -108,7 +108,12 @@ body.full .tabbar { display: none; }
 .list-head { padding: 20px 16px 12px; }
 .list-head h1 { font-size: 21px; line-height: 1.2; letter-spacing: -0.02em; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .list-head small { font-size: 13px; font-weight: 500; letter-spacing: 0; color: var(--muted); margin-left: 4px; }
-.filters { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.filters input[type="search"] {
+    flex: 1 0 100%; min-width: 0; height: 36px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px;
+    background: transparent; font: inherit; font-size: .8rem; color: var(--fg); outline: none;
+}
+.filters input[type="search"]:hover, .filters input[type="search"]:focus { border-color: var(--focus); }
 .chips { display: flex; flex: none; gap: 8px; }
 .filters .select { min-width: 0; }
 .filters select { width: 100%; text-overflow: ellipsis; }

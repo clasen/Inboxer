@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import DeepBase from "deepbase";
+import { fullTextSearch, type SearchPlugin } from "deepbase/plugins/search";
 import SqliteDriver from "deepbase-sqlite";
 import type { Actor, AuditEntry, Contact, Context, LoginLink, Message, Session, Thread } from "./types.ts";
 
@@ -21,14 +22,29 @@ export function nid(): string {
  */
 export class Store {
     readonly db: DeepBase;
+    private readonly search: SearchPlugin;
     private queue: Promise<unknown> = Promise.resolve();
 
     constructor(dataDir: string) {
-        this.db = new DeepBase(new SqliteDriver({ path: dataDir, name: "inboxer" }));
+        this.search = fullTextSearch({
+            indexes: { messages: { path: ["messages"], fields: ["subject", "text", "from", "to"], tags: ["labels"] } },
+        });
+        this.db = new DeepBase(new SqliteDriver({ path: dataDir, name: "inboxer" })).use(this.search);
     }
 
     async connect(): Promise<void> {
         await this.db.connect();
+        await this.migrateLabels();
+    }
+
+    /** Labels were once stored as `{ label: true }`; the search index reads them as an array. */
+    private async migrateLabels(): Promise<void> {
+        for (const collection of ["messages", "threads"]) {
+            const records: Record<string, { labels: string[] | Record<string, true> }> = (await this.db.get(collection)) ?? {};
+            for (const [id, record] of Object.entries(records)) {
+                if (!Array.isArray(record.labels)) await this.db.set(collection, id, { ...record, labels: Object.keys(record.labels) });
+            }
+        }
     }
 
     async close(): Promise<void> {
@@ -59,6 +75,15 @@ export class Store {
 
     async allMessages(): Promise<Message[]> {
         return Object.values((await this.db.get("messages")) ?? {});
+    }
+
+    /**
+     * Messages matching every term of `query` (the last one also as a prefix) and carrying every label,
+     * best match first; with no terms, every message with the labels.
+     */
+    async searchMessages(query: string, labels: string[]): Promise<Message[]> {
+        const hits = await this.search.query("messages", query, { prefix: true, ...(labels.length ? { tags: { labels } } : {}) });
+        return Promise.all(hits.map(hit => this.requireMessage(hit.key)));
     }
 
     getThread(id: string): Promise<Thread | null> {

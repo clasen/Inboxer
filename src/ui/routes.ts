@@ -209,13 +209,15 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     const inboxFilter = (c: Context<UiEnv>): V.InboxFilter => {
         const requested = c.req.query("status");
         const status = requested === "all" || requested === "archived" ? requested : "unanswered";
-        return { mailbox: c.req.query("mailbox") ?? "", status };
+        return { mailbox: c.req.query("mailbox") ?? "", status, q: c.req.query("q")?.trim() ?? "" };
     };
 
     const threadList = async (c: Context<UiEnv>, current: string | null): Promise<V.View> => {
         const session = c.get("session");
         const filter = inboxFilter(c);
-        const threads = await mail.listThreads({ mailbox: filter.mailbox || undefined, status: filter.status as ThreadStatus, limit: 200 }, session.scope);
+        const threads = filter.q
+            ? await mail.searchThreads(filter.q, filter.mailbox || undefined, session.scope, 200)
+            : await mail.listThreads({ mailbox: filter.mailbox || undefined, status: filter.status as ThreadStatus, limit: 200 }, session.scope);
         const accounts = await mail.listAccounts(session.scope);
         return V.threadList(threads, { accounts, accountOf: t => mail.accountOf(t), addressOf: a => mail.addressOf(a), domains: domainsOf(session), filter, own, isChat, current });
     };

@@ -68,7 +68,7 @@ export interface Message {
     html: string | null;
     headers: Record<string, string>;
     attachments: AttachmentMeta[];
-    labels: Record<string, true>;
+    labels: string[];
     note: string | null;
     created_by: "agent" | "ui" | null;
     read: boolean;
@@ -100,7 +100,7 @@ export interface Thread {
     has_draft: boolean;
     unread: number;
     archived: boolean;
-    labels: Record<string, true>;
+    labels: string[];
     message_ids: string[];
 }
 

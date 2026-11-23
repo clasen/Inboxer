@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { ConflictError, InvalidRequestError, Mail } from "../src/core/mail.ts";
 import { assertConfig, mcpTokens } from "../src/config.ts";
-import { NotFoundError } from "../src/store.ts";
+import { NotFoundError, Store } from "../src/store.ts";
 import { CATCHALL } from "../src/types.ts";
 import { startCore, testConfig, type CoreHarness } from "./helpers.ts";
 
@@ -163,6 +163,35 @@ describe("mail core", () => {
         assert.equal((await h.mail.search({ query: "LICENCIA cancion" }, null)).length, 1);
         assert.equal((await h.mail.search({ query: "licencia" }, null)).length, 2);
         assert.equal((await h.mail.search({ query: "licencia", mailbox: "feedback" }, null)).length, 1);
+    });
+
+    test("search ranks the best match first, completes the last term, and filters by labels", async () => {
+        h.provider.addInbound({ providerId: "a", from: "ana@customer.test", subject: "Hello", text: "the invoice is attached" });
+        h.provider.addInbound({ providerId: "b", from: "bob@other.test", subject: "Invoice", text: "invoice for March, invoice number 7" });
+        const [a, b] = await Promise.all(["a", "b"].map(async p => h.store.requireMessage(await h.mail.ingest("fake", p))));
+        assert.deepEqual((await h.mail.search({ query: "invoice" }, null)).map(m => m.id), [b!.id, a!.id]);
+        assert.equal((await h.mail.search({ query: "march invo" }, null)).length, 1);
+
+        await h.mail.label([a!.thread_id], ["Facturación"], [], agent);
+        assert.deepEqual((await h.mail.search({ labels: ["facturacion"] }, null)).map(m => m.id), [a!.id]);
+        assert.deepEqual((await h.mail.search({ query: "invoice", labels: ["FACTURACIÓN"] }, null)).map(m => m.id), [a!.id]);
+        assert.deepEqual((await h.mail.listThreads({ status: "all", label: "Facturación" }, null)).map(t => t.id), [a!.thread_id]);
+        await h.mail.label([a!.id], [], ["Facturación"], agent);
+        assert.equal((await h.mail.search({ labels: ["facturacion"] }, null)).length, 0);
+        assert.deepEqual((await h.store.requireThread(a!.thread_id)).labels, []);
+    });
+
+    test("labels stored as an object read back as a list", async () => {
+        h.provider.addInbound({ providerId: "a" });
+        const message = await h.store.requireMessage(await h.mail.ingest("fake", "a"));
+        const thread = await h.store.requireThread(message.thread_id);
+        await h.store.db.set("messages", message.id, { ...message, labels: { vip: true } });
+        await h.store.db.set("threads", thread.id, { ...thread, labels: { vip: true } });
+        const reopened = new Store(h.mail.cfg.dataDir);
+        await reopened.connect();
+        assert.deepEqual((await reopened.requireMessage(message.id)).labels, ["vip"]);
+        assert.deepEqual((await reopened.requireThread(thread.id)).labels, ["vip"]);
+        await reopened.close();
     });
 
     test("labels and archive apply to whole threads; a new inbound message unarchives", async () => {

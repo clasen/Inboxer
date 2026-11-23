@@ -38,16 +38,6 @@ export function textToHtml(text: string): string {
         .join("\n");
 }
 
-/** Lowercase, accent-free tokens used by search. */
-export function tokenize(value: string): string[] {
-    return value
-        .normalize("NFD")
-        .replace(/\p{M}/gu, "")
-        .toLowerCase()
-        .split(/[^\p{L}\p{N}@._+-]+/u)
-        .filter(Boolean);
-}
-
 const REPLY_PREFIX = /^\s*((re|fw|fwd|rv|aw|sv|tr|res|enc)\s*(\[\d+\])?\s*:\s*)+/i;
 
 export function normalizeSubject(subject: string): string {

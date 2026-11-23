@@ -55,6 +55,7 @@ export const S = {
     filterArchived: "Archived",
     allMailboxes: "All mailboxes",
     filter: "Filter",
+    search: "Search",
     inboxEmpty: "No threads.",
     unread: "unread",
     hasDraft: "draft",

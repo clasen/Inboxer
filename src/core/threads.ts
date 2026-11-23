@@ -81,7 +81,7 @@ export async function refreshThread(store: Store, threadId: string, newMessageId
         has_draft: false,
         unread: 0,
         archived: false,
-        labels: {},
+        labels: [],
         message_ids: newMessageId && !ids.includes(newMessageId) ? [...ids, newMessageId] : ids,
     };
     const messages = await threadMessages(store, thread);
@@ -106,7 +106,7 @@ export async function refreshThread(store: Store, threadId: string, newMessageId
     thread.has_draft = messages.some(m => m.status === "draft");
     thread.unread = messages.filter(m => m.direction === "in" && !m.read).length;
     thread.archived = settled.length > 0 && settled.every(m => m.archived);
-    for (const m of messages) Object.assign(thread.labels, m.labels);
+    thread.labels = [...new Set(messages.flatMap(m => m.labels))];
 
     await store.putThread(thread);
     return thread;

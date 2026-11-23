@@ -521,10 +521,12 @@ export function draftList(drafts: Message[], domains: string[], current: string 
 export interface InboxFilter {
     mailbox: string;
     status: string;
+    /** Search text; while set, the list holds every thread that matches it, whatever its status. */
+    q: string;
 }
 
 export function inboxQuery(filter: InboxFilter): string {
-    return new URLSearchParams({ status: filter.status, ...(filter.mailbox ? { mailbox: filter.mailbox } : {}) }).toString();
+    return new URLSearchParams({ status: filter.status, ...(filter.mailbox ? { mailbox: filter.mailbox } : {}), ...(filter.q ? { q: filter.q } : {}) }).toString();
 }
 
 /** The thread list; on a wide screen it stays beside the open thread. */
@@ -532,12 +534,13 @@ export function threadList(threads: Thread[], opts: ThreadListOptions & { domain
     const { filter } = opts;
     const mailboxLabel = (m: string) => opts.domains.length === 1 ? localPart(opts.addressOf(m)) : opts.addressOf(m);
     const tab =(status: string, label: string) =>
-        h`<a class="chip" href="/inbox?${inboxQuery({ ...filter, status })}" ${raw(filter.status === status ? 'aria-current="page"' : "")}>${label}</a>`;
+        h`<a class="chip" href="/inbox?${inboxQuery({ ...filter, status, q: "" })}" ${raw(!filter.q && filter.status === status ? 'aria-current="page"' : "")}>${label}</a>`;
     return h`<section class="list" id="list" data-live>
   <header class="list-head">
     ${listTitle(opts.domains, S.navInbox)}
     <form class="filters" method="get" action="/inbox">
       <input type="hidden" name="status" value="${filter.status}">
+      <input type="search" name="q" value="${filter.q}" placeholder="${S.search}" aria-label="${S.search}">
       <nav class="chips" aria-label="${S.filter}">${tab("unanswered", S.filterPending)}${tab("all", S.filterAll)}${tab("archived", S.filterArchived)}</nav>
       ${when(opts.accounts.length > 1, () => h`<span class="select"><select name="mailbox" aria-label="${S.allMailboxes}" onchange="this.form.requestSubmit()">
         <option value="">${S.allMailboxes}</option>

@@ -199,6 +199,27 @@ describe("http", () => {
         await client.close();
     });
 
+    test("labels set over MCP narrow search, and the inbox searches every thread", async () => {
+        h.provider.addInbound({ providerId: "a", subject: "Refund request", text: "please refund my order" });
+        h.provider.addInbound({ providerId: "b", from: "bob@other.test", subject: "Shipping", text: "where is my order" });
+        await webhook(h, [{ type: "message", providerId: "a" }, { type: "message", providerId: "b" }]);
+        const client = await mcpClient(h);
+        const refund = (await call(client, "search", { query: "refund" })).data[0];
+        await call(client, "label", { ids: [refund.thread_id], add: ["billing"] });
+        await call(client, "mark", { ids: [refund.thread_id], archived: true });
+        assert.deepEqual((await call(client, "search", { query: "order", labels: ["Billing"] })).data.map((m: { id: string }) => m.id), [refund.id]);
+        assert.deepEqual((await call(client, "search", { labels: ["billing"] })).data[0].labels, ["billing"]);
+        await client.close();
+
+        const cookie = await signIn(h);
+        const found = await (await req(h, "/inbox?q=refund", { cookie })).text();
+        assert.ok(found.includes("Refund request"), "an archived thread is found");
+        assert.ok(!found.includes("Shipping"));
+        assert.ok(found.includes(`href="/threads/${refund.thread_id}?status=unanswered&amp;q=refund"`));
+        assert.ok((await (await req(h, "/inbox?q=order", { cookie })).text()).includes("Shipping"));
+        assert.ok((await (await req(h, "/inbox?q=%3F%3F", { cookie })).text()).includes("No threads."));
+    });
+
     test("a mailbox token sees only its mailbox, and so do the browsers it signs in", async () => {
         h.provider.addInbound({ providerId: "s", subject: "Support question" });
         h.provider.addInbound({ providerId: "f", from: "bob@other.test", to: ["feedback@inboxer.test"], subject: "Feedback idea" });

@@ -292,7 +292,7 @@ Ask the client to call `list_mailboxes` to check the connection. Connectors that
 | --- | --- |
 | `list_mailboxes` | Configured mailboxes plus `catchall` |
 | `list_threads(mailbox?, status?, label?, since?, meta?, limit?)` | `status`: `unanswered` (default; last message inbound and no pending draft), `all` or `archived` |
-| `search(query?, meta?, mailbox?, from?, since?, until?, limit?)` | Full text over subject, body, from and to; accent and case insensitive |
+| `search(query?, labels?, meta?, mailbox?, from?, since?, until?, limit?)` | Full text over subject, body, from and to, best match first; accent and case insensitive. `labels` keeps messages that carry every one |
 | `get_thread(thread_id)` | Messages as plain text, pending drafts included, plus the thread's context and its participants' contacts |
 | `set_contact(address, meta?, note?)` · `get_contact(address)` | Context for an email address, such as ids in other systems |
 | `set_thread_meta(thread_id, meta?, note?)` | Context for one conversation, such as a ticket number |
@@ -384,7 +384,7 @@ DeepBase is a nested key-value store without secondary indexes, so Inboxer maint
 
 Attachments of messages the provider holds are copied to `<dataDir>/attachments/<message id>/` when the message arrives, so they outlive the provider's retention. One that fails to download is fetched again the first time it is opened.
 
-Search scans messages in memory. That is enough for support volumes; a dedicated full-text index can be added later without changing the tools.
+Search uses DeepBase's full-text plugin: an in-memory index of `messages/`, ranked with BM25, with `labels` indexed as tags. It is built on the first search after startup and kept current by every write. The inbox in the UI searches the same index and lists the threads with a matching message, archived ones included.
 
 ## Agent skill
 

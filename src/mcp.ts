@@ -79,9 +79,10 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     }, wrap(cfg, async args => (await mail.listThreads(args, actor.scope)).map(t => threadView(cfg, t))));
 
     server.registerTool("search", {
-        description: "Full-text search over subject, body, from and to. Accent and case insensitive; every term must match. Pass query, meta, or both.",
+        description: "Full-text search over subject, body, from and to, best match first. Accent and case insensitive; every term must match, the last one also as a prefix. Pass query, labels, meta, or a combination; without query, newest first.",
         inputSchema: {
             query: z.string().optional(),
+            labels: z.array(z.string()).optional().describe("Every label must be on the message; case and accent insensitive"),
             meta: metaFilter.optional(),
             mailbox: z.string().optional(),
             from: z.string().optional().describe("Substring of the sender address"),
@@ -115,7 +116,7 @@ function buildServer(mail: Mail, access: Access, actor: Actor): McpServer {
     }, wrap(cfg, async ({ thread_id, meta, note }) => mail.setThreadContext(thread_id, { meta, note }, actor)));
 
     server.registerTool("label", {
-        description: "Add or remove labels. ids are message ids or thread ids (applies to every message in the thread).",
+        description: "Add or remove labels, e.g. add [\"billing\"]. ids are message ids or thread ids (applies to every message in the thread). Find them again with search's labels or list_threads' label.",
         inputSchema: { ids: z.array(z.string()), add: z.array(z.string()).optional(), remove: z.array(z.string()).optional() },
     }, wrap(cfg, async ({ ids, add, remove }) => ({ updated: await mail.label(ids, add ?? [], remove ?? [], actor) })));
 

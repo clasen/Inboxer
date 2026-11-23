@@ -71,8 +71,8 @@
   "dependencies": {
     "@hono/node-server": "^2.1.8",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "deepbase": "^4.0.0",
-    "deepbase-sqlite": "^4.0.0",
+    "deepbase": "^4.1.0",
+    "deepbase-sqlite": "^4.1.0",
     "hono": "^4.13.18",
     "svix": "^2.10.0",
     "zod": "^4.6.7"

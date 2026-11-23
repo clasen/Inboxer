@@ -109,7 +109,7 @@ Rules for agents:
 - Never `force` an update of a draft with `edited_by_human: true` unless the user explicitly asks; the human's edit wins.
 - `send_draft` sends the last saved version. A failed send leaves the draft pending and retrying is safe.
 - `label` and `mark` accept message ids or thread ids; a thread id applies to every message in it. Archived threads come back to the inbox when a new message arrives.
-- `search` matches every term, ignoring case and accents, across subject, body, from and to; narrow with `mailbox`, `from`, `since`, `until`, `meta`. Pass `query`, `meta`, or both.
+- `search` matches every term, ignoring case and accents, across subject, body, from and to, best match first; the last term also matches as a prefix. `labels` keeps messages carrying every label you set with `label`; narrow further with `mailbox`, `from`, `since`, `until`, `meta`. Pass `query`, `labels`, `meta`, or a combination.
 - Messages list their `attachments` (`inline: true` is an image embedded in the body). `get_attachment` returns the content: images as images you can look at, text as text, other files (PDF, documents) as an embedded resource. Files over `mcp.maxAttachmentMb` return an error. Agents cannot attach files to drafts; the reviewer can, in the UI, and they are listed in the draft's `attachments`.
 - Threads, messages and drafts in results carry `url`, which opens them in the review UI (scrolled to the draft). When telling the user what you drafted or sent, include that `url`.
 - Times are ISO 8601. A `catchall` reply goes out from the address the message was written to; `list_threads` also takes that address as `mailbox`.

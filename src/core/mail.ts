@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { tokenize } from "deepbase/plugins/search";
 import type { DeliveryStatus, MailProvider, ProviderEvent, ProviderKind, ProviderMessage } from "../provider/types.ts";
 import { reaches } from "../config.ts";
 import { NotFoundError, nid, type Store } from "../store.ts";
@@ -6,7 +7,7 @@ import { CATCHALL, type Actor, type Contact, type Context, type AttachmentMeta, 
 import { AttachmentFiles } from "./attachments.ts";
 import { bareAddress, domainOf, formatAddress, phoneAddress } from "./address.ts";
 import { mergeContext, metaMatches, type ContextPatch } from "./context.ts";
-import { htmlToText, replySubject, textToHtml, tokenize } from "./text.ts";
+import { htmlToText, replySubject, textToHtml } from "./text.ts";
 import { chatThreadId, messageTime, participantsOf, refreshThread, resolveThreadId, threadMessages } from "./threads.ts";
 
 const STATUS_RANK: Record<DeliveryStatus, number> = { sent: 1, delivered: 2, read: 3, bounced: 4, failed: 4 };
@@ -49,6 +50,8 @@ export interface ListThreadsInput {
 
 export interface SearchInput {
     query?: string;
+    /** Every one must be on the message. */
+    labels?: string[];
     meta?: Record<string, MetaValue>;
     mailbox?: string;
     from?: string;
@@ -304,7 +307,7 @@ export class Mail {
                 html: inbound.html,
                 headers: inbound.headers,
                 attachments: inbound.attachments,
-                labels: {},
+                labels: [],
                 note: null,
                 created_by: null,
                 read: !incoming,
@@ -367,7 +370,7 @@ export class Mail {
             if (!reaches(scope, t.mailbox)) return false;
             if (byMeta && !byMeta(t.id, t.participants)) return false;
             if (input.mailbox && t.mailbox !== input.mailbox && this.accountOf(t) !== input.mailbox) return false;
-            if (input.label && !t.labels[input.label]) return false;
+            if (input.label && !t.labels.includes(input.label)) return false;
             if (input.since && t.last_at < input.since) return false;
             if (status === "archived") return t.archived;
             if (t.archived) return false;
@@ -378,23 +381,36 @@ export class Mail {
     }
 
     async search(input: SearchInput, scope: Scope): Promise<MessageView[]> {
-        const terms = tokenize(input.query ?? "");
+        return (await this.matchingMessages(input, scope)).slice(0, input.limit ?? 50).map(toView);
+    }
+
+    /** Threads with a message matching `query`, best match first; none when the query has no terms. */
+    async searchThreads(query: string, mailbox: string | undefined, scope: Scope, limit: number): Promise<Thread[]> {
+        if (!tokenize(query).length) return [];
+        const ids = [...new Set((await this.matchingMessages({ query }, scope)).map(m => m.thread_id))];
+        const threads = await Promise.all(ids.map(id => this.store.requireThread(id)));
+        return threads.filter(t => !mailbox || t.mailbox === mailbox || this.accountOf(t) === mailbox).slice(0, limit);
+    }
+
+    /** Best match first when the query has terms, newest first otherwise. */
+    private async matchingMessages(input: SearchInput, scope: Scope): Promise<Message[]> {
+        const ranked = tokenize(input.query ?? "").length > 0;
+        const labels = input.labels ?? [];
         const byMeta = await this.metaFilter(input.meta);
-        if (!terms.length && !byMeta) throw new InvalidRequestError("pass a query with searchable terms, meta, or both");
+        if (!ranked && !labels.length && !byMeta) throw new InvalidRequestError("pass a query with searchable terms, labels, meta, or a combination");
         const from = input.from?.toLowerCase();
-        const hits = (await this.store.allMessages()).filter(m => {
+        const candidates = ranked || labels.length ? await this.store.searchMessages(input.query ?? "", labels) : await this.store.allMessages();
+        const hits = candidates.filter(m => {
             if (m.status === "discarded" || !reaches(scope, m.mailbox)) return false;
             if (byMeta && !byMeta(m.thread_id, participantsOf(m))) return false;
             if (input.mailbox && m.mailbox !== input.mailbox) return false;
             if (from && !bareAddress(m.from).includes(from)) return false;
             const at = messageTime(m);
             if (input.since && at < input.since) return false;
-            if (input.until && at > input.until) return false;
-            const haystack = tokenize([m.subject, m.text, m.from, ...m.to].join(" ")).join(" ");
-            return terms.every(term => haystack.includes(term));
+            return !(input.until && at > input.until);
         });
-        hits.sort((a, b) => messageTime(b).localeCompare(messageTime(a)));
-        return hits.slice(0, input.limit ?? 50).map(toView);
+        if (!ranked) hits.sort((a, b) => messageTime(b).localeCompare(messageTime(a)));
+        return hits;
     }
 
     async getThread(threadId: string, scope: Scope): Promise<{ thread: Thread; context: Context | null; contacts: Contact[]; messages: MessageView[] }> {
@@ -482,8 +498,7 @@ export class Mail {
 
     label(ids: string[], add: string[], remove: string[], actor: Actor): Promise<number> {
         return this.updateMessages(ids, actor, "label", m => {
-            for (const label of add) m.labels[label] = true;
-            for (const label of remove) delete m.labels[label];
+            m.labels = [...new Set([...m.labels, ...add])].filter(label => !remove.includes(label));
         });
     }
 
@@ -580,7 +595,7 @@ export class Mail {
             html: input.html ?? null,
             headers: {},
             attachments: [],
-            labels: {},
+            labels: [],
             note: input.note ?? null,
             created_by: actor.kind === "ui" ? "ui" : "agent",
             read: true,
@@ -858,7 +873,7 @@ export function toView(m: Message): MessageView {
         subject: m.subject,
         date: messageTime(m),
         text: m.text || (m.html ? htmlToText(m.html) : ""),
-        labels: Object.keys(m.labels),
+        labels: m.labels,
         read: m.read,
         attachments: m.attachments,
         note: m.note,
