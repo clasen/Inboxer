@@ -318,7 +318,7 @@ function linked(text: string, compact = false, labels: RegExp[] = []): View {
         let named: RegExpExecArray | null = null;
         if (compact && web && (enclosed || stem !== lead)) for (const label of labels) if ((named = label.exec(stem))) break;
         const open = h`<a href="${url}" target="_blank" rel="noopener noreferrer"`;
-        if (named) parts.push(h`${stem.slice(0, named.index)}${open}>${named[0]}</a>`);
+        if (named) parts.push(h`${stem.slice(0, named.index)}${open}>${named[0].replace(/\s+/g, " ")}</a>`);
         else if (!web) parts.push(h`${before}<a href="mailto:${address}" data-compose="${address}">${address}</a>`);
         else if (labelled) parts.push(h`${before}${open}>${url.split("/")[2]}</a>`);
         else if (compact) parts.push(h`${before}${open} class="address">${url.replace(/^https?:\/\//, "").split(/[?#]/)[0]!.replace(/\/$/, "")}</a>`);
@@ -333,6 +333,30 @@ function linked(text: string, compact = false, labels: RegExp[] = []): View {
     return join(parts);
 }
 
+/** Widths at which mail software wraps plain text; a longest line outside them was not wrapped at a column. */
+const WRAP_WIDTH = { min: 60, max: 80 };
+const WEB = /https?:\/\//;
+/** A line that opens a list item or a quote starts on its own, however full the line above is. */
+const OPENS_ITEM = /^\s*(?:[-*•>]|\d+[.)])(?:\s|$)/;
+const columns = (line: string) => [...line.trimEnd()].length;
+
+/**
+ * Received text without the line breaks its sender put in to keep lines under a fixed width, so paragraphs
+ * wrap to the bubble instead. The width is the longest line, addresses aside, since those run past it. A break
+ * was put in when the next line's first word would not have fit; one such break alone is a coincidence.
+ */
+function unwrapped(text: string): string {
+    const lines = text.split("\n");
+    const width = Math.max(0, ...lines.filter(line => !WEB.test(line)).map(columns));
+    if (width < WRAP_WIDTH.min || width > WRAP_WIDTH.max) return text;
+    const wrapped = lines.map((line, i) => {
+        const next = lines[i + 1]?.trim();
+        return !!next && !!line.trim() && !WEB.test(line) && !OPENS_ITEM.test(next) && columns(line) + 1 + columns(next.split(/\s/)[0]!) > width;
+    });
+    if (wrapped.filter(Boolean).length < 2) return text;
+    return lines.reduce((joined, line, i) => joined + (wrapped[i - 1] ? ` ${line.trimStart()}` : `${i ? "\n" : ""}${line}`).replace(wrapped[i] ? /\s+$/ : /$/, ""), "");
+}
+
 function recipients(m: MessageView): View | "" {
     if (!m.to.length && !m.cc.length) return "";
     return h`<div class="meta">${when(m.to.length, () => h`<span>${S.to}: ${m.to.join(", ")}</span>`)}${when(m.cc.length, () => h`<span>${S.cc}: ${m.cc.join(", ")}</span>`)}</div>`;
@@ -345,7 +369,7 @@ export function messageBubble(m: MessageView, showSender: boolean, html: string 
     return h`<article class="msg ${mine ? "mine" : "theirs"}" id="m-${m.id}">
   ${when(showSender && !mine, () => h`<div class="msg-from">${displayName(m.from)}</div>`)}
   ${extra ? recipients(m) : ""}
-  <pre class="body">${linked(withoutImagePlaceholders(m), true, html ? linkLabels(html) : [])}</pre>
+  <pre class="body">${linked(mine ? withoutImagePlaceholders(m) : unwrapped(withoutImagePlaceholders(m)), true, html ? linkLabels(html) : [])}</pre>
   ${attachments(m)}
   <span class="msg-time">${formatTime(m.date)}${mine ? ` · ${m.status}` : ""}</span>
 </article>`;

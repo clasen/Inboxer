@@ -548,7 +548,7 @@ describe("http", () => {
         ].join("\n")));
     });
 
-    test("a link label reads past line breaks, and the line its address broke is joined again", async () => {
+    test("a link label reads as one line, and the line its address broke is joined again", async () => {
         const cookie = await signIn(h);
         h.provider.addInbound({ providerId: "x", text: "You can also:\n\n* View your invoice online \n( https://example.com/i/1 )\n\n* Edit details\n(https://example.com/i/1/edit)\n (add VAT ID, etc.)\nAcme ( https://example.com/ ) says hi\nNo more? Pause or\nStop mail \n( https://example.com/stop )\n\n(https://example.com/alone)", html: "<p><a href=\"https://t.example.com/c\">View your invoice online</a> <a href=\"https://t.example.com/c\">Edit details</a> <a href=\"https://t.example.com/c\">Pause or  Stop\nmail</a></p>" });
         await webhook(h, [{ type: "message", providerId: "x" }]);
@@ -564,7 +564,7 @@ describe("http", () => {
             "",
             `* ${a("https://example.com/i/1/edit", "Edit details")} (add VAT ID, etc.)`,
             `Acme (${a("https://example.com/", "example.com")}) says hi`,
-            `No more? ${a("https://example.com/stop", "Pause or\nStop mail")}`,
+            `No more? ${a("https://example.com/stop", "Pause or Stop mail")}`,
             "",
             `(<a href="https://example.com/alone" target="_blank" rel="noopener noreferrer" class="address">example.com/alone</a>)`,
         ].join("\n")));
@@ -582,6 +582,40 @@ describe("http", () => {
         const a = (href: string, shown: string, bare = false) => `<a href="${href}" target="_blank" rel="noopener noreferrer"${bare ? ' class="address"' : ""}>${shown}</a>`;
         assert.ok(bodies.includes(`Launch URL: ${a("https://example.com/launch?a=1&amp;b=2", "example.com/launch", true)}\n${a("https://example.com/docs", "Docs")}`));
         assert.ok(bodies.includes(`Look at this: ${a("https://example.com/plain", "example.com/plain", true)}`));
+    });
+
+    test("received text wrapped at a fixed width flows again, and text that was not stays as written", async () => {
+        const cookie = await signIn(h);
+        const wrapped = [
+            "Quick version: every day we feature new tech products on our",
+            "homepage. The community votes, the best ones climb the rankings,",
+            "and great tools get discovered.",
+            "",
+            "Three things to do, each one as long as a full line of this mail:",
+            "- vote",
+            "> a quoted line",
+            "All your invoices are always available at",
+            "https://example.com/settings/billing/invoices",
+            "Thomas",
+        ];
+        const signature = "Thanks for the quick answer, I will try it tomorrow morning ok\nJuan Carlos Pérez\nHead of Operations, Acme";
+        h.provider.addInbound({ providerId: "x", text: wrapped.join("\n") });
+        h.provider.addInbound({ providerId: "y", from: "Bea <bea@customer.test>", subject: "Plain", text: signature });
+        await webhook(h, [{ type: "message", providerId: "x" }, { type: "message", providerId: "y" }]);
+        const client = await mcpClient(h);
+        const threads = (await call(client, "list_threads")).data;
+        await client.close();
+        const bodies = (await Promise.all(threads.map(async (t: { id: string }) => (await req(h, `/threads/${t.id}`, { cookie })).text()))).join("");
+        assert.ok(bodies.includes([
+            "Quick version: every day we feature new tech products on our homepage. The community votes, the best ones climb the rankings, and great tools get discovered.",
+            "",
+            "Three things to do, each one as long as a full line of this mail:",
+            "- vote",
+            "&gt; a quoted line",
+            'All your invoices are always available at <a href="https://example.com/settings/billing/invoices" target="_blank" rel="noopener noreferrer" class="address">example.com/settings/billing/invoices</a>',
+            "Thomas",
+        ].join("\n")));
+        assert.ok(bodies.includes(signature));
     });
 
     test("a draft shows its addresses whole", async () => {
