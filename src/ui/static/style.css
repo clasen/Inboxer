@@ -114,6 +114,10 @@ body.full .tabbar { display: none; }
     background: transparent; font: inherit; font-size: .8rem; color: var(--fg); outline: none;
 }
 .filters input[type="search"]:hover, .filters input[type="search"]:focus { border-color: var(--focus); }
+@media (min-width: 900px) {
+    .list-head .filters { margin-top: 20px; }
+    .filters input[type="search"] { height: 44px; border-radius: 12px; }
+}
 .chips { display: flex; flex: none; gap: 8px; }
 .filters .select { min-width: 0; }
 .filters select { width: 100%; text-overflow: ellipsis; }
