@@ -503,7 +503,7 @@ describe("http", () => {
 
     test("a web address escaped by the sender's template links to the address it stands for", async () => {
         const cookie = await signIn(h);
-        h.provider.addInbound({ providerId: "x", text: "Verify: https://example.com/verify?token&#x3D;abc&amp;pad&#61;&#x3D;\nThen 1 &lt; 2. https://example.com/?a&#x99999999;" });
+        h.provider.addInbound({ providerId: "x", text: "Verify: https://example.com/verify?token&#x3D;abc&amp;pad&#61;&#x3D;\nThen 1 &lt; 2. https://example.com/?a&#x99999999;", html: "<p><a href=\"https://t.example.com/c\">Verify</a></p>" });
         await webhook(h, [{ type: "message", providerId: "x" }]);
         const client = await mcpClient(h);
         const [thread] = (await call(client, "list_threads")).data;
@@ -514,7 +514,7 @@ describe("http", () => {
 
     test("an address padded inside its brackets reads like one that isn't", async () => {
         const cookie = await signIn(h);
-        h.provider.addInbound({ providerId: "x", text: "Stories ( https://www.example.com/stories ), or\nUnsubscribe\n(\nhttps://example.com/u?token=abc )\nWrite to us ( hi@there.test )!\n(pic [ https://example.com/i.png ])\nNot (a label) https://example.com/free )" });
+        h.provider.addInbound({ providerId: "x", text: "Stories ( https://www.example.com/stories ), or\nUnsubscribe\n(\nhttps://example.com/u?token=abc )\nWrite to us ( hi@there.test )!\n(pic [ https://example.com/i.png ])\nNot (a label) https://example.com/free )", html: "<p><a href=\"https://t.example.com/c\">Stories</a> <a href=\"https://t.example.com/c\"><b>Unsubscribe</b></a></p>" });
         await webhook(h, [{ type: "message", providerId: "x" }]);
         const client = await mcpClient(h);
         const [thread] = (await call(client, "list_threads")).data;
@@ -522,18 +522,17 @@ describe("http", () => {
         const body = await (await req(h, `/threads/${thread.id}`, { cookie })).text();
         const a = (href: string, shown: string, bare = false) => `<a href="${href}" target="_blank" rel="noopener noreferrer"${bare ? ' class="address"' : ""}>${shown}</a>`;
         assert.ok(body.includes([
-            `Stories (${a("https://www.example.com/stories", "www.example.com")}), or`,
-            "Unsubscribe",
-            `(${a("https://example.com/u?token=abc", "example.com")})`,
+            `${a("https://www.example.com/stories", "Stories")}, or`,
+            a("https://example.com/u?token=abc", "Unsubscribe"),
             'Write to us (<a href="mailto:hi@there.test" data-compose="hi@there.test">hi@there.test</a>)!',
             "(pic)",
             `Not (a label) ${a("https://example.com/free", "example.com/free", true)} )`,
         ].join("\n")));
     });
 
-    test("a received address shows as the label before its colon, or as its host and path", async () => {
+    test("a received address shows as the label its link has in the HTML part, or as its host and path", async () => {
         const cookie = await signIn(h);
-        h.provider.addInbound({ providerId: "x", text: "Tired of v2.0 mail? Unsubscribe here: https://example.com/u?token=abc\n- Privacy: https://example.com/privacy | Terms: https://example.com/terms\nOur links:\nhttps://www.example.com/a/b/?utm=1#top and https://example.com/\nMail: hi@there.test" });
+        h.provider.addInbound({ providerId: "x", text: "Tired of v2.0 mail? Unsubscribe here: https://example.com/u?token=abc\n- Privacy: https://example.com/privacy | Terms: https://example.com/terms\nOur links:\nhttps://www.example.com/a/b/?utm=1#top and https://example.com/\nMail: hi@there.test", html: "<p><a href=\"https://t.example.com/c\">Unsubscribe here</a> <a href=\"https://t.example.com/c\">Privacy</a> <a href=\"https://t.example.com/c\">Terms</a></p>" });
         await webhook(h, [{ type: "message", providerId: "x" }]);
         const client = await mcpClient(h);
         const [thread] = (await call(client, "list_threads")).data;
@@ -547,6 +546,42 @@ describe("http", () => {
             `${a("https://www.example.com/a/b/?utm=1#top", "www.example.com/a/b", true)} and ${a("https://example.com/", "example.com", true)}`,
             'Mail: <a href="mailto:hi@there.test" data-compose="hi@there.test">hi@there.test</a>',
         ].join("\n")));
+    });
+
+    test("a link label reads past line breaks, and the line its address broke is joined again", async () => {
+        const cookie = await signIn(h);
+        h.provider.addInbound({ providerId: "x", text: "You can also:\n\n* View your invoice online \n( https://example.com/i/1 )\n\n* Edit details\n(https://example.com/i/1/edit)\n (add VAT ID, etc.)\nAcme ( https://example.com/ ) says hi\nNo more? Pause or\nStop mail \n( https://example.com/stop )\n\n(https://example.com/alone)", html: "<p><a href=\"https://t.example.com/c\">View your invoice online</a> <a href=\"https://t.example.com/c\">Edit details</a> <a href=\"https://t.example.com/c\">Pause or  Stop\nmail</a></p>" });
+        await webhook(h, [{ type: "message", providerId: "x" }]);
+        const client = await mcpClient(h);
+        const [thread] = (await call(client, "list_threads")).data;
+        await client.close();
+        const body = await (await req(h, `/threads/${thread.id}`, { cookie })).text();
+        const a = (href: string, shown: string) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${shown}</a>`;
+        assert.ok(body.includes([
+            "You can also:",
+            "",
+            `* ${a("https://example.com/i/1", "View your invoice online")}`,
+            "",
+            `* ${a("https://example.com/i/1/edit", "Edit details")} (add VAT ID, etc.)`,
+            `Acme (${a("https://example.com/", "example.com")}) says hi`,
+            `No more? ${a("https://example.com/stop", "Pause or\nStop mail")}`,
+            "",
+            `(<a href="https://example.com/alone" target="_blank" rel="noopener noreferrer" class="address">example.com/alone</a>)`,
+        ].join("\n")));
+    });
+
+    test("an address the HTML part shows, or one in mail without HTML, stays in sight", async () => {
+        const cookie = await signIn(h);
+        h.provider.addInbound({ providerId: "x", text: "Launch URL: https://example.com/launch?a=1&b=2\nDocs: https://example.com/docs", html: "<ul><li>Launch URL: https://example.com/launch?a=1&amp;b=2</li><li><a href=\"https://example.com/docs\">Docs</a></li></ul>" });
+        h.provider.addInbound({ providerId: "y", from: "Bea <bea@customer.test>", subject: "Plain", text: "Look at this: https://example.com/plain" });
+        await webhook(h, [{ type: "message", providerId: "x" }, { type: "message", providerId: "y" }]);
+        const client = await mcpClient(h);
+        const threads = (await call(client, "list_threads")).data;
+        await client.close();
+        const bodies = (await Promise.all(threads.map(async (t: { id: string }) => (await req(h, `/threads/${t.id}`, { cookie })).text()))).join("");
+        const a = (href: string, shown: string, bare = false) => `<a href="${href}" target="_blank" rel="noopener noreferrer"${bare ? ' class="address"' : ""}>${shown}</a>`;
+        assert.ok(bodies.includes(`Launch URL: ${a("https://example.com/launch?a=1&amp;b=2", "example.com/launch", true)}\n${a("https://example.com/docs", "Docs")}`));
+        assert.ok(bodies.includes(`Look at this: ${a("https://example.com/plain", "example.com/plain", true)}`));
     });
 
     test("a draft shows its addresses whole", async () => {

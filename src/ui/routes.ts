@@ -109,7 +109,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     const draftView = async (c: Context<UiEnv>, id: string): Promise<V.View> => {
         const draft = await mail.requireMessage(id, c.get("session").scope);
         if (draft.status === "discarded") return V.draftDone(id, S.discarded);
-        if (draft.status !== "draft") return V.messageBubble(shown(toView(draft)), false);
+        if (draft.status !== "draft") return V.messageBubble(shown(toView(draft)), false, draft.html);
         return V.draftCard(draft, mail.uiCanWrite(draft.mailbox));
     };
 
@@ -232,10 +232,13 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         }
         const { messages, context, contacts } = await mail.getThread(id, session.scope);
         const people = thread.participants.filter(p => !own(p));
-        const entries = await Promise.all(messages.map(async m => ({
-            at: m.date,
-            view: m.status === "draft" ? V.draftCard(await mail.store.requireMessage(m.id), mail.uiCanWrite(m.mailbox)) : V.messageBubble(shown(m), people.length > 1),
-        })));
+        const entries = await Promise.all(messages.map(async m => {
+            const stored = await mail.store.requireMessage(m.id);
+            return {
+                at: m.date,
+                view: m.status === "draft" ? V.draftCard(stored, mail.uiCanWrite(m.mailbox)) : V.messageBubble(shown(m), people.length > 1, stored.html),
+            };
+        }));
         const account = mail.accountOf(thread);
         const chat = isChat(thread.mailbox);
         const reply = { allowed: account !== CATCHALL && mail.uiCanWrite(thread.mailbox), replyAll: people.length > 1 && !chat };

@@ -3,7 +3,7 @@ import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import { bareAddress } from "../core/address.ts";
 import type { MessageView } from "../core/mail.ts";
-import { decodeEntities } from "../core/text.ts";
+import { decodeEntities, htmlToText } from "../core/text.ts";
 import { type Contact, type Context, type Message, type Session, type Thread } from "../types.ts";
 import { ASSETS } from "./assets.ts";
 import { S } from "./strings.ts";
@@ -269,17 +269,29 @@ const OPENER = /([(\[<])[^\S\n]*\n?[^\S\n]*$/;
 const CLOSER = /^[^\S\n]*\n?[^\S\n]*([)\]>])/;
 
 /** A link's label when its address follows a colon on the same line: the clause that ends at that colon. */
-const NAMED = /((?:^|[.!?|]\s+)[^\p{L}\p{N}]*)([\p{L}\p{N}](?:(?![.!?|]\s).)*?)\s*:\s*$/u;
+/** A line break before an indented line: the sender's converter broke the line where a link's address went. */
+const CONTINUES = /^\n(?=[^\S\n]+\S)/;
+const ANCHOR = /<a\b[^>]*>([\s\S]*?)<\/a>/gi;
+
+/** What the links of an HTML part read, longest first, each as a pattern for the end of the text before an address. */
+function linkLabels(html: string): RegExp[] {
+    const labels = new Set([...html.matchAll(ANCHOR)].map(anchor => htmlToText(anchor[1]!).replace(/\s+/g, " ")).filter(Boolean));
+    return [...labels]
+        .sort((a, b) => b.length - a.length)
+        .map(label => new RegExp(`(?<![\\p{L}\\p{N}])${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s+")}$`, "u"));
+}
 
 /**
  * Plain text with its web and mail addresses turned into links; a mail address opens New mail.
  * Mail written from HTML puts a link's address in brackets after its label, so the text reads past it:
  * a labelled address shows as its host, an image's address is left out, and an address that repeats shows once.
  * A web address carrying HTML entities was escaped by the sender's template, so the link gets the address they stand for.
- * `compact` is for mail already sent or received: "label: address" shows as the label alone, and any other
- * web address as its host and path. A draft keeps its addresses whole, since the reviewer approves them.
+ * `compact` is for mail already sent or received: a web address shows as its host and path. `labels` are the
+ * links of that mail's HTML part: where one stands right before an address, in brackets or after a colon, it is
+ * the link and the address goes unseen, as in the HTML. A draft keeps its addresses whole, since the reviewer
+ * approves them.
  */
-function linked(text: string, compact = false): View {
+function linked(text: string, compact = false, labels: RegExp[] = []): View {
     const parts: View[] = [];
     let last = 0;
     for (const match of text.matchAll(LINKABLE)) {
@@ -301,17 +313,21 @@ function linked(text: string, compact = false): View {
         const labelled = enclosed && LABEL.test(text.slice(0, bracket));
         const url = web ? decodeEntities(address) : address;
         const before = text.slice(last, enclosed ? bracket + 1 : match.index);
-        const lineStart = before.lastIndexOf("\n") + 1;
-        const named = compact && web && !enclosed ? NAMED.exec(before.slice(lineStart)) : null;
+        const lead = text.slice(last, bracket);
+        const stem = enclosed ? lead.trimEnd() : lead.replace(/\s*:\s*$/, "");
+        let named: RegExpExecArray | null = null;
+        if (compact && web && (enclosed || stem !== lead)) for (const label of labels) if ((named = label.exec(stem))) break;
         const open = h`<a href="${url}" target="_blank" rel="noopener noreferrer"`;
-        if (named) parts.push(h`${before.slice(0, lineStart + named.index + named[1]!.length)}${open}>${named[2]}</a>`);
+        if (named) parts.push(h`${stem.slice(0, named.index)}${open}>${named[0]}</a>`);
         else if (!web) parts.push(h`${before}<a href="mailto:${address}" data-compose="${address}">${address}</a>`);
         else if (labelled) parts.push(h`${before}${open}>${url.split("/")[2]}</a>`);
         else if (compact) parts.push(h`${before}${open} class="address">${url.replace(/^https?:\/\//, "").split(/[?#]/)[0]!.replace(/\/$/, "")}</a>`);
         else parts.push(h`${before}${open}>${url}</a>`);
-        const rest = text.slice(close);
+        const below = lead.slice(stem.length).includes("\n");
+        const resume = named && enclosed ? close + 1 + (below ? (CONTINUES.exec(text.slice(close + 1))?.[0].length ?? 0) : 0) : close;
+        const rest = text.slice(resume);
         const repeat = [`(${address})`, `[${address}]`, `<${address}>`].find(r => rest.trimStart().startsWith(r));
-        last = close + (repeat ? rest.indexOf(repeat) + repeat.length : 0);
+        last = resume + (repeat ? rest.indexOf(repeat) + repeat.length : 0);
     }
     parts.push(h`${text.slice(last)}`);
     return join(parts);
@@ -323,13 +339,13 @@ function recipients(m: MessageView): View | "" {
 }
 
 /** A message in a thread: received ones on the left, ours on the right. */
-export function messageBubble(m: MessageView, showSender: boolean): View {
+export function messageBubble(m: MessageView, showSender: boolean, html: string | null): View {
     const mine = m.direction === "out";
     const extra = m.cc.length || m.to.length > (mine ? 1 : 0);
     return h`<article class="msg ${mine ? "mine" : "theirs"}" id="m-${m.id}">
   ${when(showSender && !mine, () => h`<div class="msg-from">${displayName(m.from)}</div>`)}
   ${extra ? recipients(m) : ""}
-  <pre class="body">${linked(withoutImagePlaceholders(m), true)}</pre>
+  <pre class="body">${linked(withoutImagePlaceholders(m), true, html ? linkLabels(html) : [])}</pre>
   ${attachments(m)}
   <span class="msg-time">${formatTime(m.date)}${mine ? ` · ${m.status}` : ""}</span>
 </article>`;
