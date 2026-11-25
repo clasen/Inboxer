@@ -40,7 +40,6 @@ h1 { font-size: 2rem; line-height: 1.1; letter-spacing: -0.04em; font-weight: 70
 .sidebar { display: none; }
 body.app { padding-bottom: calc(var(--tabbar) + env(safe-area-inset-bottom)); }
 body.app.full { padding-bottom: 0; }
-.page { max-width: 760px; padding: 24px 16px 32px; }
 
 .tabbar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
@@ -89,7 +88,6 @@ body.full .tabbar { display: none; }
     .side-nav a[aria-current="page"] { background: var(--chip); color: var(--fg); }
     .side-nav .count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--accent-text); }
     .side-end { margin-top: auto; }
-    .page { padding-top: 40px; }
 }
 
 /* Inbox: the list, and the open thread beside it on a wide screen */
@@ -420,8 +418,10 @@ textarea {
 }
 
 /* Settings */
-.setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; border-top: 1px solid var(--line); }
-.setting label { font-weight: 500; }
+.setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border-top: 1px solid var(--line); }
+.setting .select { min-width: 0; }
+.setting select { max-width: 100%; text-overflow: ellipsis; }
+.setting label { font-weight: 500; white-space: nowrap; }
 .row.device:hover { background: none; }
 .row.device .avatar { color: var(--muted); }
 .row.device form { display: contents; }

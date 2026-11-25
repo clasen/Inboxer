@@ -517,7 +517,8 @@ describe("http", () => {
         assert.ok(pinned.includes('<div class="day">Jan 16</div>') && pinned.includes('<span class="msg-time">8:30 AM</span>'));
 
         const settings = await (await req(h, "/settings", { cookie: `${cookie}; ${zone.cookie}` })).text();
-        assert.match(settings, /<option value="Asia\/Tokyo" selected>Asia\/Tokyo<\/option>/);
+        assert.match(settings, /<option value="Asia\/Tokyo" selected>Asia\/Tokyo \(UTC\+09:00\)<\/option>/);
+        assert.match(settings, /<option value="UTC" >UTC<\/option>/);
         assert.match(settings, /<option value="auto" selected>Automatic<\/option>\s*<option value="h23"/);
     });
 

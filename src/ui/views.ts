@@ -679,16 +679,29 @@ export interface ClockSettings {
     hourCycle: "auto" | HourCycle;
 }
 
-/** Every IANA time zone the runtime knows, UTC first. */
-const TIME_ZONES = ["UTC", ...Intl.supportedValuesOf("timeZone")];
+/** Every IANA time zone the runtime knows, UTC first, each with a formatter for its UTC offset. */
+const TIME_ZONES = ["UTC", ...Intl.supportedValuesOf("timeZone")].map(zone => ({
+    zone,
+    offset: new Intl.DateTimeFormat("en", { timeZone: zone, timeZoneName: "longOffset" }),
+}));
+
+/** `America/Buenos Aires (UTC-03:00)`, with the offset in effect now. */
+function zoneLabel(zone: string, offset: Intl.DateTimeFormat, now: Date): string {
+    const gmt = offset.formatToParts(now).find(p => p.type === "timeZoneName")!.value;
+    if (zone === "UTC") return zone;
+    return `${zone.replaceAll("_", " ")} (${gmt === "GMT" ? "UTC+00:00" : gmt.replace("GMT", "UTC")})`;
+}
 
 function option(value: string, label: string, selected: string): View {
     return h`<option value="${value}" ${raw(value === selected ? "selected" : "")}>${label}</option>`;
 }
 
-export function settingsPage(theme: Theme, clock: ClockSettings): View {
-    return h`<div class="page">
-<h1>${S.navSettings}</h1>
+export function settingsPage(theme: Theme, clock: ClockSettings, current: Clock): View {
+    const now = new Date();
+    const zones = TIME_ZONES.map(z => ({ zone: z.zone, label: zoneLabel(z.zone, z.offset, now) }));
+    const currentZone = zones.find(z => z.zone === current.timeZone)?.label ?? current.timeZone;
+    return h`<section class="list">
+<header class="list-head"><h1>${S.navSettings}</h1></header>
 <form class="setting" method="post" action="/theme" hx-boost="false">
   <label for="theme">${S.theme}</label>
   <span class="select"><select id="theme" name="theme" onchange="this.form.submit()">
@@ -699,8 +712,8 @@ export function settingsPage(theme: Theme, clock: ClockSettings): View {
 <form class="setting" method="post" action="/clock" hx-boost="false">
   <label for="time-zone">${S.timeZone}</label>
   <span class="select"><select id="time-zone" name="time_zone" onchange="this.form.submit()">
-    ${option("auto", S.automatic, clock.timeZone)}
-    ${join(TIME_ZONES.map(z => option(z, z.replaceAll("_", " "), clock.timeZone)))}
+    ${option("auto", clock.timeZone === "auto" ? `${S.automatic} · ${currentZone}` : S.automatic, clock.timeZone)}
+    ${join(zones.map(z => option(z.zone, z.label, clock.timeZone)))}
   </select></span>
 </form>
 <form class="setting" method="post" action="/clock" hx-boost="false">
@@ -712,5 +725,5 @@ export function settingsPage(theme: Theme, clock: ClockSettings): View {
   </select></span>
 </form>
 <form class="setting" method="post" action="/logout"><button class="danger">${S.logout}</button></form>
-</div>`;
+</section>`;
 }

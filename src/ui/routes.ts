@@ -414,7 +414,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         mail.changes.removeEventListener("change", ping);
     }));
 
-    app.get("/settings", async c => page(c, S.navSettings, V.settingsPage(theme(c), clockSettings(c)), "settings"));
+    app.get("/settings", async c => page(c, S.navSettings, V.settingsPage(theme(c), clockSettings(c), clock(c)), "settings"));
 
     app.post("/devices/:id/revoke", async c => {
         await access.revokeSession(c.req.param("id"), uiActor(c.get("session")));
