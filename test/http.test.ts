@@ -489,6 +489,38 @@ describe("http", () => {
         assert.ok(body.includes("&lt;i&gt;VIP&lt;/i&gt;"));
     });
 
+    test("dates follow the browser's clock until Settings pins a time zone or hour cycle", async () => {
+        const cookie = await signIn(h);
+        h.provider.addInbound({ providerId: "late", at: "2026-01-15T23:30:00.000Z" });
+        await webhook(h, [{ type: "message", providerId: "late" }]);
+        const client = await mcpClient(h);
+        const [thread] = (await call(client, "list_threads")).data;
+        await client.close();
+        const view = async (cookies: string) => (await req(h, `/threads/${thread.id}`, { cookie: `${cookie}; ${cookies}` })).text();
+
+        const utc = await view("inboxer_local_clock=bogus");
+        assert.ok(utc.includes('<div class="day">Jan 15</div>') && utc.includes('<span class="msg-time">23:30</span>'));
+
+        const local = await view(`inboxer_local_clock=${encodeURIComponent("America/Argentina/Buenos_Aires|h23")}`);
+        assert.ok(local.includes('<div class="day">Jan 15</div>') && local.includes('<span class="msg-time">20:30</span>'));
+
+        const pin = async (body: Record<string, string>) => {
+            const res = await req(h, "/clock", { method: "POST", body: new URLSearchParams(body), cookie });
+            return { status: res.status, cookie: /inboxer_\w+=[^;]+/.exec(res.headers.get("set-cookie") ?? "")?.[0] ?? "" };
+        };
+        assert.equal((await pin({ time_zone: "Mars/Olympus" })).status, 400);
+        assert.equal((await pin({ hour_cycle: "h25" })).status, 400);
+        const zone = await pin({ time_zone: "Asia/Tokyo" });
+        const cycle = await pin({ hour_cycle: "h12" });
+        assert.equal(zone.status, 303);
+        const pinned = await view(`inboxer_local_clock=${encodeURIComponent("America/Argentina/Buenos_Aires|h23")}; ${zone.cookie}; ${cycle.cookie}`);
+        assert.ok(pinned.includes('<div class="day">Jan 16</div>') && pinned.includes('<span class="msg-time">8:30 AM</span>'));
+
+        const settings = await (await req(h, "/settings", { cookie: `${cookie}; ${zone.cookie}` })).text();
+        assert.match(settings, /<option value="Asia\/Tokyo" selected>Asia\/Tokyo<\/option>/);
+        assert.match(settings, /<option value="auto" selected>Automatic<\/option>\s*<option value="h23"/);
+    });
+
     test("incoming HTML is never rendered in the thread view", async () => {
         const cookie = await signIn(h);
         h.provider.addInbound({ providerId: "x", text: null, html: "<script>alert(1)</script><p>Hello <b>there</b></p>" });

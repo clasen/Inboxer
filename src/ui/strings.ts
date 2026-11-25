@@ -13,6 +13,11 @@ export const S = {
     themeLight: "Light",
     themeDark: "Dark",
     theme: "Theme",
+    timeZone: "Time zone",
+    hourCycle: "Clock",
+    hours24: "24-hour",
+    hours12: "12-hour",
+    automatic: "Automatic",
 
     draftsEmpty: "No drafts waiting for review.",
     to: "To",

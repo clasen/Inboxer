@@ -340,7 +340,7 @@ On a phone, navigation moves to a bottom tab bar and editors open as bottom shee
 
 ![The context panel in the light theme](docs/screenshots/desktop-context-light.png)
 
-The theme follows the system setting; **Settings** has a System / Light / Dark switch stored in a cookie, and Log out. Every UI string lives in `src/ui/strings.ts`.
+The theme follows the system setting; **Settings** has a System / Light / Dark switch, a time zone and a 12- or 24-hour clock, each stored in a cookie on that device, and Log out. Dates follow the browser's time zone and clock until Settings pins them. Every UI string lives in `src/ui/strings.ts`.
 
 ### Signing in
 

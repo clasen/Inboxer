@@ -1,3 +1,16 @@
+// Dates render on the server in the browser's time zone and hour cycle unless Settings pins them; a page drawn
+// before the server knew them, or after they changed, reloads once with them.
+{
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const cycle = ["h11", "h12"].includes(new Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions().hourCycle) ? "h12" : "h23";
+    const local = `${zone}|${cycle}`;
+    const read = () => document.cookie.split("; ").find(c => c.startsWith("inboxer_local_clock="))?.slice("inboxer_local_clock=".length);
+    if (read() !== encodeURIComponent(local)) {
+        document.cookie = `inboxer_local_clock=${encodeURIComponent(local)}; path=/; max-age=34560000; samesite=lax; secure`;
+        if (read() === encodeURIComponent(local) && document.body?.classList.contains("app")) location.reload();
+    }
+}
+
 // New mail opens as a modal sheet, addressed when a mail address in a message opened it; a [data-close] button closes it, and so does a click outside it (closedby="any").
 document.addEventListener("click", event => {
     const target = event.target instanceof Element ? event.target : null;

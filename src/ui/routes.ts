@@ -13,12 +13,51 @@ const THEME_COOKIE = "inboxer_theme";
 /** Browsers cap cookie lifetime at 400 days; the session cookie is re-issued on every request. */
 const COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
 const THEMES = new Set<V.Theme>(["system", "light", "dark"]);
+const TIME_ZONE_COOKIE = "inboxer_time_zone";
+const HOUR_CYCLE_COOKIE = "inboxer_hour_cycle";
+/** The browser's own time zone and hour cycle as `zone|cycle`, kept current by app.js; `auto` settings follow it. */
+const LOCAL_CLOCK_COOKIE = "inboxer_local_clock";
+const HOUR_CYCLES = new Set<string>(["h12", "h23"]);
 
 export type UiEnv = { Variables: { session: Session; secret: string } };
 
 function theme(c: Context): V.Theme {
     const value = getCookie(c, THEME_COOKIE) as V.Theme | undefined;
     return value && THEMES.has(value) ? value : "system";
+}
+
+function isTimeZone(value: string | undefined): value is string {
+    if (!value) return false;
+    try {
+        new Intl.DateTimeFormat("en", { timeZone: value });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+const isHourCycle = (value: string | undefined): value is V.HourCycle => !!value && HOUR_CYCLES.has(value);
+
+function clockSettings(c: Context): V.ClockSettings {
+    const timeZone = getCookie(c, TIME_ZONE_COOKIE);
+    const hourCycle = getCookie(c, HOUR_CYCLE_COOKIE);
+    return { timeZone: isTimeZone(timeZone) ? timeZone : "auto", hourCycle: isHourCycle(hourCycle) ? hourCycle : "auto" };
+}
+
+/** The clock dates render in: the chosen settings, else the browser's, else UTC on a 24-hour clock until app.js reports it. */
+function clock(c: Context): V.Clock {
+    const settings = clockSettings(c);
+    const [localZone, localCycle] = (getCookie(c, LOCAL_CLOCK_COOKIE) ?? "").split("|");
+    return {
+        timeZone: settings.timeZone !== "auto" ? settings.timeZone : isTimeZone(localZone) ? localZone : "UTC",
+        hourCycle: settings.hourCycle !== "auto" ? settings.hourCycle : isHourCycle(localCycle) ? localCycle : "h23",
+    };
+}
+
+/** The same-origin page a settings form was posted from, else the root. */
+function back(c: Context): string {
+    const referer = c.req.header("referer");
+    return referer && new URL(referer).origin === new URL(c.req.url).origin ? new URL(referer).pathname + new URL(referer).search : "/";
 }
 
 function clientInfo(c: Context) {
@@ -84,9 +123,21 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         const value = String((await c.req.parseBody()).theme ?? "") as V.Theme;
         if (!THEMES.has(value)) return c.text("Invalid theme", 400);
         setCookie(c, THEME_COOKIE, value, { path: "/", sameSite: "Lax", maxAge: COOKIE_MAX_AGE });
-        const back = c.req.header("referer");
-        const path = back && new URL(back).origin === new URL(c.req.url).origin ? new URL(back).pathname + new URL(back).search : "/";
-        return c.redirect(path, 303);
+        return c.redirect(back(c), 303);
+    });
+
+    app.post("/clock", async c => {
+        const body = await c.req.parseBody();
+        for (const [field, cookie, valid] of [
+            ["time_zone", TIME_ZONE_COOKIE, isTimeZone],
+            ["hour_cycle", HOUR_CYCLE_COOKIE, isHourCycle],
+        ] as const) {
+            if (body[field] === undefined) continue;
+            const value = String(body[field]);
+            if (value !== "auto" && !valid(value)) return c.text(`Invalid ${field}`, 400);
+            setCookie(c, cookie, value, { path: "/", sameSite: "Lax", maxAge: COOKIE_MAX_AGE });
+        }
+        return c.redirect(back(c), 303);
     });
 
     const ui = ["/", "/inbox", "/threads/*", "/drafts/*", "/attachments/*", "/compose", "/devices", "/devices/*", "/settings", "/logout", "/events"];
@@ -109,14 +160,14 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
     const draftView = async (c: Context<UiEnv>, id: string): Promise<V.View> => {
         const draft = await mail.requireMessage(id, c.get("session").scope);
         if (draft.status === "discarded") return V.draftDone(id, S.discarded);
-        if (draft.status !== "draft") return V.messageBubble(shown(toView(draft)), false, draft.html);
-        return V.draftCard(draft, mail.uiCanWrite(draft.mailbox));
+        if (draft.status !== "draft") return V.messageBubble(shown(toView(draft)), false, draft.html, clock(c));
+        return V.draftCard(draft, mail.uiCanWrite(draft.mailbox), clock(c));
     };
 
     app.get("/", async c => {
         const session = c.get("session");
         const drafts = await mail.listDrafts(undefined, session.scope);
-        return page(c, S.navDrafts, V.inboxPage(V.draftList(drafts, domainsOf(session), null), null), "drafts");
+        return page(c, S.navDrafts, V.inboxPage(V.draftList(drafts, domainsOf(session), null, clock(c)), null), "drafts");
     });
 
     app.get("/drafts/:id", async c => {
@@ -125,7 +176,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         if (draft.status !== "draft") return c.redirect(`/threads/${draft.thread_id}?status=all`, 303);
         const { thread, view } = await threadPane(c, draft.thread_id, "/");
         const drafts = await mail.listDrafts(undefined, session.scope);
-        return page(c, thread.subject || S.navDrafts, V.inboxPage(V.draftList(drafts, domainsOf(session), draft.id), view), "drafts", 200, true);
+        return page(c, thread.subject || S.navDrafts, V.inboxPage(V.draftList(drafts, domainsOf(session), draft.id, clock(c)), view), "drafts", 200, true);
     });
 
     app.get("/drafts/:id/card", async c => c.html(await draftView(c, c.req.param("id"))));
@@ -219,7 +270,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
             ? await mail.searchThreads(filter.q, filter.mailbox || undefined, session.scope, 200)
             : await mail.listThreads({ mailbox: filter.mailbox || undefined, status: filter.status as ThreadStatus, limit: 200 }, session.scope);
         const accounts = await mail.listAccounts(session.scope);
-        return V.threadList(threads, { accounts, accountOf: t => mail.accountOf(t), addressOf: a => mail.addressOf(a), domains: domainsOf(session), filter, own, isChat, current });
+        return V.threadList(threads, { accounts, accountOf: t => mail.accountOf(t), addressOf: a => mail.addressOf(a), domains: domainsOf(session), filter, own, isChat, current, clock: clock(c) });
     };
 
     app.get("/inbox", async c => page(c, S.navInbox, V.inboxPage(await threadList(c, null), null), "inbox"));
@@ -234,17 +285,18 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         }
         const { messages, context, contacts } = await mail.getThread(id, session.scope);
         const people = thread.participants.filter(p => !own(p));
+        const viewer = clock(c);
         const entries = await Promise.all(messages.map(async m => {
             const stored = await mail.store.requireMessage(m.id);
             return {
                 at: m.date,
-                view: m.status === "draft" ? V.draftCard(stored, mail.uiCanWrite(m.mailbox)) : V.messageBubble(shown(m), people.length > 1, stored.html),
+                view: m.status === "draft" ? V.draftCard(stored, mail.uiCanWrite(m.mailbox), viewer) : V.messageBubble(shown(m), people.length > 1, stored.html, viewer),
             };
         }));
         const account = mail.accountOf(thread);
         const chat = isChat(thread.mailbox);
         const reply = { allowed: account !== CATCHALL && mail.uiCanWrite(thread.mailbox), replyAll: people.length > 1 && !chat };
-        return { thread, view: V.threadView(thread, entries, { context, contacts }, { back, filter: inboxFilter(c), own, account, chat, reply }) };
+        return { thread, view: V.threadView(thread, entries, { context, contacts }, { back, filter: inboxFilter(c), own, account, chat, reply, clock: viewer }) };
     };
 
     app.get("/threads/:id", async c => {
@@ -351,7 +403,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
 
     app.get("/devices", async c => {
         const session = c.get("session");
-        return page(c, S.navDevices, V.devicesPage(await access.listSessions(session.scope), session.id, a => mail.addressOf(a)), "devices");
+        return page(c, S.navDevices, V.devicesPage(await access.listSessions(session.scope), session.id, a => mail.addressOf(a), clock(c)), "devices");
     });
 
     // Every write pings open pages, which refetch their live regions; the stream carries no mail data.
@@ -362,7 +414,7 @@ export function registerUi(app: Hono<UiEnv>, mail: Mail, access: Access, cfg: In
         mail.changes.removeEventListener("change", ping);
     }));
 
-    app.get("/settings", async c => page(c, S.navSettings, V.settingsPage(theme(c)), "settings"));
+    app.get("/settings", async c => page(c, S.navSettings, V.settingsPage(theme(c), clockSettings(c)), "settings"));
 
     app.post("/devices/:id/revoke", async c => {
         await access.revokeSession(c.req.param("id"), uiActor(c.get("session")));

@@ -43,31 +43,44 @@ function icon(name: keyof typeof ICONS): View {
     return raw(`<svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`) as View;
 }
 
-const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
-
-function formatTime(iso: string): string {
-    return new Date(iso).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+/** How a viewer reads dates: the time zone they are in and whether their clock runs 12 or 24 hours. */
+export interface Clock {
+    timeZone: string;
+    hourCycle: HourCycle;
 }
 
-function formatDay(iso: string): string {
+export type HourCycle = "h12" | "h23";
+
+/** The calendar day of `date` where the viewer is, as YYYY-MM-DD. */
+const dayOf = (date: Date, clock: Clock) => date.toLocaleDateString("en-CA", { timeZone: clock.timeZone });
+const sameDay = (a: Date, b: Date, clock: Clock) => dayOf(a, clock) === dayOf(b, clock);
+
+function formatTime(iso: string, clock: Clock): string {
+    return new Date(iso).toLocaleTimeString("en", {
+        hour: clock.hourCycle === "h23" ? "2-digit" : "numeric",
+        minute: "2-digit",
+        hourCycle: clock.hourCycle,
+        timeZone: clock.timeZone,
+    });
+}
+
+function formatDay(iso: string, clock: Clock): string {
     const date = new Date(iso);
-    const now = new Date();
-    return date.getFullYear() === now.getFullYear()
-        ? date.toLocaleDateString("en", { month: "short", day: "numeric" })
-        : date.toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" });
+    const sameYear = dayOf(date, clock).slice(0, 4) === dayOf(new Date(), clock).slice(0, 4);
+    return date.toLocaleDateString("en", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }), timeZone: clock.timeZone });
 }
 
 /** A time today, a day otherwise. */
-function formatDate(iso: string): string {
-    return sameDay(new Date(iso), new Date()) ? formatTime(iso) : formatDay(iso);
+function formatDate(iso: string, clock: Clock): string {
+    return sameDay(new Date(iso), new Date(), clock) ? formatTime(iso, clock) : formatDay(iso, clock);
 }
 
-function dayLabel(iso: string): string {
+function dayLabel(iso: string, clock: Clock): string {
     const date = new Date(iso);
     const yesterday = new Date(Date.now() - 86_400_000);
-    if (sameDay(date, new Date())) return S.today;
-    if (sameDay(date, yesterday)) return S.yesterday;
-    return formatDay(iso);
+    if (sameDay(date, new Date(), clock)) return S.today;
+    if (sameDay(date, yesterday, clock)) return S.yesterday;
+    return formatDay(iso, clock);
 }
 
 /** Display name from `Name <a@b.com>`, else the bare address. */
@@ -363,7 +376,7 @@ function recipients(m: MessageView): View | "" {
 }
 
 /** A message in a thread: received ones on the left, ours on the right. */
-export function messageBubble(m: MessageView, showSender: boolean, html: string | null): View {
+export function messageBubble(m: MessageView, showSender: boolean, html: string | null, clock: Clock): View {
     const mine = m.direction === "out";
     const extra = m.cc.length || m.to.length > (mine ? 1 : 0);
     return h`<article class="msg ${mine ? "mine" : "theirs"}" id="m-${m.id}">
@@ -371,7 +384,7 @@ export function messageBubble(m: MessageView, showSender: boolean, html: string 
   ${extra ? recipients(m) : ""}
   <pre class="body">${linked(mine ? withoutImagePlaceholders(m) : unwrapped(withoutImagePlaceholders(m)), true, html ? linkLabels(html) : [])}</pre>
   ${attachments(m)}
-  <span class="msg-time">${formatTime(m.date)}${mine ? ` · ${m.status}` : ""}</span>
+  <span class="msg-time">${formatTime(m.date, clock)}${mine ? ` · ${m.status}` : ""}</span>
 </article>`;
 }
 
@@ -408,13 +421,13 @@ function pendingCard(d: Message): View {
 }
 
 /** A draft for review, on our side of its thread; without actions where the session can only read. */
-export function draftCard(d: Message, canAct: boolean): View {
+export function draftCard(d: Message, canAct: boolean, clock: Clock): View {
     if (d.pending) return pendingCard(d);
     return h`<article class="card draft" id="draft-${d.id}">
   <div class="meta">
     <span class="badge draft">${S.draft}</span>
     ${mailboxBadge(draftAccount(d))}
-    <span>${d.edited_by_human ? S.editedByHuman : S.byAgent} · ${formatDate(d.created_at)}</span>
+    <span>${d.edited_by_human ? S.editedByHuman : S.byAgent} · ${formatDate(d.created_at, clock)}</span>
   </div>
   <div class="draft-head">
     <div class="meta"><span>${S.to}: <strong>${d.to.join(", ")}</strong></span>${when(d.cc.length, () => h`<span>${S.cc}: ${d.cc.join(", ")}</span>`)}</div>
@@ -500,13 +513,13 @@ function listTitle(domains: string[], label: string): View {
 }
 
 /** Drafts waiting for review, listed like the inbox; each opens its thread. */
-export function draftList(drafts: Message[], domains: string[], current: string | null): View {
+export function draftList(drafts: Message[], domains: string[], current: string | null, clock: Clock): View {
     return h`<section class="list" id="list" data-live>
   <header class="list-head">${listTitle(domains, S.navDrafts)}</header>
   ${drafts.length ? join(drafts.map(d => h`<a class="row" href="/drafts/${d.id}" ${raw(d.id === current ? 'aria-current="page"' : "")}>
     <span class="avatar" aria-hidden="true">${initials(d.to[0] ?? d.mailbox)}</span>
     <span class="row-main">
-      <span class="row-top"><span class="who">${d.to.map(displayName).join(", ") || "—"}</span><time datetime="${d.created_at}">${formatDate(d.created_at)}</time></span>
+      <span class="row-top"><span class="who">${d.to.map(displayName).join(", ") || "—"}</span><time datetime="${d.created_at}">${formatDate(d.created_at, clock)}</time></span>
       <span class="row-subject">${d.subject || "—"}</span>
       <span class="row-snippet">${d.text}</span>
       <span class="row-tags">
@@ -561,6 +574,7 @@ interface ThreadListOptions {
     own: (address: string) => boolean;
     isChat: (mailbox: string) => boolean;
     current: string | null;
+    clock: Clock;
 }
 
 function threadRow(t: Thread, opts: ThreadListOptions): View {
@@ -569,7 +583,7 @@ function threadRow(t: Thread, opts: ThreadListOptions): View {
     return h`<a class="row ${t.unread ? "unread" : ""}" href="/threads/${t.id}?${inboxQuery(opts.filter)}" ${raw(t.id === opts.current ? 'aria-current="page"' : "")}>
   <span class="avatar" aria-hidden="true">${initials(people[0] ?? t.mailbox)}</span>
   <span class="row-main">
-    <span class="row-top"><span class="who">${people.join(", ") || t.mailbox}</span><time datetime="${t.last_at}">${formatDate(t.last_at)}</time></span>
+    <span class="row-top"><span class="who">${people.join(", ") || t.mailbox}</span><time datetime="${t.last_at}">${formatDate(t.last_at, opts.clock)}</time></span>
     ${when(!chat, () => h`<span class="row-subject">${t.subject || "—"}</span>`)}
     ${when(t.has_draft || opts.accounts.length > 1 || t.unread, () => h`<span class="row-tags">
       ${when(t.has_draft, () => h`<span class="badge draft">${S.hasDraft}</span>`)}
@@ -591,7 +605,7 @@ export interface ThreadEntry {
 }
 
 /** The conversation, oldest first, with day separators, a reply box and the context panel. A chat is titled by who it is with. */
-export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextView, opts: { back: string; filter: InboxFilter; own: (address: string) => boolean; account: string; chat: boolean; reply: { allowed: boolean; replyAll: boolean } }): View {
+export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextView, opts: { back: string; filter: InboxFilter; own: (address: string) => boolean; account: string; chat: boolean; reply: { allowed: boolean; replyAll: boolean }; clock: Clock }): View {
     const query = inboxQuery(opts.filter);
     const rows = contextRows(ctx);
     const people = thread.participants.filter(p => !opts.own(p));
@@ -600,7 +614,7 @@ export function threadView(thread: Thread, entries: ThreadEntry[], ctx: ContextV
     const items: View[] = [];
     let day = "";
     for (const entry of entries) {
-        const label = dayLabel(entry.at);
+        const label = dayLabel(entry.at, opts.clock);
         if (label !== day) items.push(h`<div class="day">${label}</div>`);
         day = label;
         items.push(entry.view);
@@ -638,18 +652,18 @@ export function archiveButton(thread: Thread): View {
 </form>`;
 }
 
-export function devicesPage(sessions: Session[], currentId: string, addressOf: (account: string) => string): View {
+export function devicesPage(sessions: Session[], currentId: string, addressOf: (account: string) => string, clock: Clock): View {
     return h`<section class="list">
   <header class="list-head"><h1>${S.navDevices}</h1></header>
   ${sessions.length ? join(sessions.map(s => h`<div class="row device" id="session-${s.id}">
     <span class="avatar" aria-hidden="true">${icon("devices")}</span>
     <span class="row-main">
-      <span class="row-top"><span class="who">${s.label ?? s.user_agent ?? S.unknownDevice}</span><time datetime="${s.last_seen}">${formatDate(s.last_seen)}</time></span>
+      <span class="row-top"><span class="who">${s.label ?? s.user_agent ?? S.unknownDevice}</span><time datetime="${s.last_seen}">${formatDate(s.last_seen, clock)}</time></span>
       ${when(s.label && s.user_agent, () => h`<span class="row-subject">${s.user_agent}</span>`)}
       <span class="row-tags">
         ${when(s.id === currentId, () => h`<span class="badge">${S.thisDevice}</span>`)}
         ${when(s.scope, () => join(s.scope!.map(m => mailboxBadge(addressOf(m)))))}
-        <span class="row-by">${S.signedIn} ${formatDate(s.created_at)} · ${S.createdBy} ${s.created_by}</span>
+        <span class="row-by">${S.signedIn} ${formatDate(s.created_at, clock)} · ${S.createdBy} ${s.created_by}</span>
       </span>
     </span>
     ${s.id === currentId
@@ -659,7 +673,20 @@ export function devicesPage(sessions: Session[], currentId: string, addressOf: (
 </section>`;
 }
 
-export function settingsPage(theme: Theme): View {
+/** Clock settings as chosen; `auto` follows the browser. */
+export interface ClockSettings {
+    timeZone: "auto" | string;
+    hourCycle: "auto" | HourCycle;
+}
+
+/** Every IANA time zone the runtime knows, UTC first. */
+const TIME_ZONES = ["UTC", ...Intl.supportedValuesOf("timeZone")];
+
+function option(value: string, label: string, selected: string): View {
+    return h`<option value="${value}" ${raw(value === selected ? "selected" : "")}>${label}</option>`;
+}
+
+export function settingsPage(theme: Theme, clock: ClockSettings): View {
     return h`<div class="page">
 <h1>${S.navSettings}</h1>
 <form class="setting" method="post" action="/theme" hx-boost="false">
@@ -667,6 +694,21 @@ export function settingsPage(theme: Theme): View {
   <span class="select"><select id="theme" name="theme" onchange="this.form.submit()">
     ${join((["system", "light", "dark"] as const).map(t =>
         h`<option value="${t}" ${raw(t === theme ? "selected" : "")}>${{ system: S.themeSystem, light: S.themeLight, dark: S.themeDark }[t]}</option>`))}
+  </select></span>
+</form>
+<form class="setting" method="post" action="/clock" hx-boost="false">
+  <label for="time-zone">${S.timeZone}</label>
+  <span class="select"><select id="time-zone" name="time_zone" onchange="this.form.submit()">
+    ${option("auto", S.automatic, clock.timeZone)}
+    ${join(TIME_ZONES.map(z => option(z, z.replaceAll("_", " "), clock.timeZone)))}
+  </select></span>
+</form>
+<form class="setting" method="post" action="/clock" hx-boost="false">
+  <label for="hour-cycle">${S.hourCycle}</label>
+  <span class="select"><select id="hour-cycle" name="hour_cycle" onchange="this.form.submit()">
+    ${option("auto", S.automatic, clock.hourCycle)}
+    ${option("h23", S.hours24, clock.hourCycle)}
+    ${option("h12", S.hours12, clock.hourCycle)}
   </select></span>
 </form>
 <form class="setting" method="post" action="/logout"><button class="danger">${S.logout}</button></form>
