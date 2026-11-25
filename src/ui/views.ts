@@ -495,7 +495,7 @@ export function draftDone(id: string, text: string): View {
 /** A list's title: the session's sending domains, with the list's name beside them. */
 function listTitle(domains: string[], label: string): View {
     return domains.length
-        ? h`<h1>${domains.join(" · ")} <small>${label}</small></h1>`
+        ? h`<h1><span>${domains.join(" · ")}</span> <small>${label}</small></h1>`
         : h`<h1>${label}</h1>`;
 }
 
