@@ -283,7 +283,9 @@ With a client configured by JSON, such as a project `.mcp.json`:
 }
 ```
 
-Ask the client to call `list_mailboxes` to check the connection. Connectors that require OAuth, such as the ones added from the claude.ai web interface, are not supported yet; they need a client that can send a static header.
+If you run more than one Inboxer, name each server after its deployment, such as `inboxer-acme` and `inboxer-globex`. Clients key servers by name, so two entries called `inboxer` in different scopes (one global, one in a project's `.mcp.json`) collide: only one connects, and the agent reads and sends mail in whichever it got.
+
+Ask the client to call `list_mailboxes` to check the connection, and that the addresses are the ones you expect. Connectors that require OAuth, such as the ones added from the claude.ai web interface, are not supported yet; they need a client that can send a static header.
 
 ### Tools
 

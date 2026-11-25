@@ -89,6 +89,8 @@ claude mcp add --transport http inboxer https://inboxer.example.com/mcp --header
 
 JSON clients: `{ "type": "http", "url": "<publicUrl>/mcp", "headers": { "Authorization": "Bearer <token>" } }`. OAuth-only connectors are not supported.
 
+When the user has more than one Inboxer, name each server after its deployment (`inboxer-acme`, `inboxer-globex`), never plain `inboxer`: clients key servers by name, so a global entry and a project entry with the same name collide and only one connects. Before reading or sending, confirm with `list_mailboxes` that the addresses belong to the deployment you mean.
+
 ## Work with mail through MCP
 
 Typical support loop:
