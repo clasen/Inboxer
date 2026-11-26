@@ -685,11 +685,10 @@ const TIME_ZONES = ["UTC", ...Intl.supportedValuesOf("timeZone")].map(zone => ({
     offset: new Intl.DateTimeFormat("en", { timeZone: zone, timeZoneName: "longOffset" }),
 }));
 
-/** `America/Buenos Aires (UTC-03:00)`, with the offset in effect now. */
+/** `(UTC-03:00) America/Buenos Aires`, with the offset in effect now. */
 function zoneLabel(zone: string, offset: Intl.DateTimeFormat, now: Date): string {
     const gmt = offset.formatToParts(now).find(p => p.type === "timeZoneName")!.value;
-    if (zone === "UTC") return zone;
-    return `${zone.replaceAll("_", " ")} (${gmt === "GMT" ? "UTC+00:00" : gmt.replace("GMT", "UTC")})`;
+    return `(${gmt === "GMT" ? "UTC+00:00" : gmt.replace("GMT", "UTC")}) ${zone.replaceAll("_", " ")}`;
 }
 
 function option(value: string, label: string, selected: string): View {
